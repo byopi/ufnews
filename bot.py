@@ -1,13 +1,10 @@
-import os, hashlib, requests, logging, threading, asyncio, random
-from datetime import datetime
+import os, hashlib, requests, logging, threading, asyncio
 from io import BytesIO
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import xml.etree.ElementTree as ET # Para leer el RSS
 
-import pytz
-from bs4 import BeautifulSoup
 import google.generativeai as genai
 from supabase import create_client, Client
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.constants import ParseMode
@@ -16,7 +13,6 @@ from telegram.constants import ParseMode
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("universo_football")
 
-# Variables de entorno (Asegúrate de que coincidan en Render)
 TOKEN          = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID       = int(os.environ.get("ADMIN_TELEGRAM_ID", 0))
 CHANNEL_ID     = os.environ.get("TELEGRAM_CHANNEL_ID")
@@ -35,182 +31,142 @@ pendientes = {}
 class RenderKeepAlive(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers()
-        self.wfile.write(b"Universo Football Online")
+        self.wfile.write(b"Universo Football RSS Online")
     def log_message(self, *args): pass
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
     HTTPServer(("0.0.0.0", port), RenderKeepAlive).serve_forever()
 
-# ─── Scraping vía xcancel.com ────────────────────────────────────────────────
-def fetch_tweets(user, num=5):
-    # Creamos una sesión para mantener cookies (esto ayuda contra el 403)
-    session = requests.Session()
-    base_url = "https://xcancel.com"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3",
-        "Referer": "https://google.com", # Simular que venimos de una búsqueda
-        "DNT": "1",
-        "Connection": "keep-alive"
+# ─── Obtención vía RSS (Gratis y Estable) ────────────────────────────────────
+def fetch_tweets_rss(user, num=5):
+    # Usamos una instancia pública de RSS-Bridge configurada para Twitter
+    # Nota: Si una instancia falla, puedes buscar otra en 'rss-bridge.org'
+    base_url = "https://rssbridge.org/bridge01/" 
+    params = {
+        "action": "display",
+        "bridge": "TwitterBridge",
+        "context": "By username",
+        "u": user,
+        "format": "Atom"
     }
-
+    
+    logger.info(f"📡 Solicitando RSS para @{user}...")
+    
     try:
-        # Primero hacemos una visita a la home para obtener cookies de sesión
-        session.get(base_url, headers=headers, timeout=10)
-        
-        # Ahora intentamos ir al perfil del usuario
-        r = session.get(f"{base_url}/{user}", headers=headers, timeout=15)
-        
-        if r.status_code == 403:
-            logger.error(f"❌ xcancel sigue detectando el bot (403) en {user}")
-            return []
-            
+        r = requests.get(base_url, params=params, timeout=20)
         if r.status_code != 200:
-            logger.error(f"❌ Error {r.status_code} en {user}")
+            logger.error(f"❌ RSS-Bridge falló: {r.status_code}")
             return []
 
-        soup = BeautifulSoup(r.text, "html.parser")
-        items = soup.select(".timeline-item")
+        # Parseamos el XML (Atom format)
+        root = ET.fromstring(r.content)
+        # El namespace de Atom es necesario para encontrar los tags
+        ns = {'atom': 'http://www.w3.org/2005/Atom'}
         
-        if not items:
-            # A veces xcancel usa clases diferentes si detecta algo raro
-            items = soup.select(".tweet-body") 
-            
         res = []
-        for it in items[:num]:
-            txt_elem = it.select_one(".tweet-content") or it.select_one(".tweet-text")
-            if not txt_elem: continue
+        # Buscamos las entradas (tweets)
+        for entry in root.findall('atom:entry', ns)[:num]:
+            title = entry.find('atom:title', ns).text
+            link = entry.find('atom:link', ns).attrib['href']
+            content = entry.find('atom:content', ns).text # Aquí suele venir el texto y la imagen
             
-            lnk_elem = it.select_one(".tweet-link") or it.select_one("a[href*='/status/']")
-            url_tweet = f"https://x.com{lnk_elem['href']}" if lnk_elem else f"{base_url}/{user}"
+            # Limpieza básica de HTML en el contenido si es necesario
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(content, "html.parser")
+            texto_limpio = soup.get_text(strip=True)
             
-            img_elem = it.select_one(".attachment img") or it.select_one(".tweet-image img")
-            url_img = None
-            if img_elem:
-                src = img_elem.get('src', '')
-                url_img = src if src.startswith('http') else f"{base_url}{src}"
-            
+            # Intentar extraer imagen del contenido HTML del RSS
+            img_tag = soup.find('img')
+            url_img = img_tag['src'] if img_tag else None
+
             res.append({
-                "texto": txt_elem.get_text(strip=True),
-                "url": url_tweet,
+                "texto": texto_limpio,
+                "url": link,
                 "img": url_img,
                 "user": user
             })
-        
+            
+        logger.info(f"✅ RSS: {len(res)} noticias de {user}")
         return res
     except Exception as e:
-        logger.error(f"❌ Error en fetch: {e}")
+        logger.error(f"❌ Error en RSS: {e}")
         return []
 
-# ─── Lógica de Procesamiento ─────────────────────────────────────────────────
-async def procesar_tweet(t, context):
-    # Generar ID único basado en el contenido para evitar duplicados
-    tid = hashlib.md5(t["texto"].encode()).hexdigest()[:12]
+# ─── Procesamiento e IA (Igual que antes) ───────────────────────────────────
+async def procesar_noticia(n, context):
+    tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     
-    # Check en Supabase
-    duplicado = supabase.table("noticias").select("id").eq("identificador_ia", tid).execute()
-    if duplicado.data: return False
+    # Duplicados
+    if supabase.table("noticias").select("id").eq("identificador_ia", tid).execute().data:
+        return False
 
     try:
-        # 1. Clasificar con Gemini
-        tipo_raw = gemini_model.generate_content(f"Responde solo 'fichaje' o 'noticia': {t['texto'][:150]}")
-        tipo = tipo_raw.text.strip().lower()
-        
-        # 2. Redactar para Universo Football
-        prompt = f"Redacta un post de Telegram con emojis para este {tipo}: {t['texto']}. Fuente: @{t['user']}. Formato: Impactante y breve."
+        # Clasificación
+        tipo = gemini_model.generate_content(f"Dime 'fichaje' o 'noticia': {n['texto'][:100]}").text.strip().lower()
+        # Redacción
+        prompt = f"Como analista deportivo de 'Universo Football', redacta para Telegram este {tipo}: {n['texto']}. Fuente: @{n['user']}. Usa emojis."
         redac = gemini_model.generate_content(prompt).text.strip()
         
-        # 3. Guardar en DB
         supabase.table("noticias").insert({
-            "identificador_ia": tid,
-            "url_origen": t["url"],
-            "tipo": tipo,
-            "estado": "pendiente",
-            "texto_final": redac
+            "identificador_ia": tid, "url_origen": n["url"], 
+            "tipo": tipo, "estado": "pendiente", "texto_final": redac
         }).execute()
         
-        # 4. Descargar imagen si existe
-        img_data = None
-        if t["img"]:
-            try: img_data = requests.get(t["img"], timeout=10).content
-            except: pass
-
-        pendientes[tid] = {"texto": redac, "foto": img_data}
+        img_b = requests.get(n["img"]).content if n["img"] else None
+        pendientes[tid] = {"texto": redac, "foto": img_b}
         
-        # 5. Enviar al Admin para aprobación
         btn = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"),
+            InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), 
             InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")
         ]])
         
-        if img_data:
-            await context.bot.send_photo(ADMIN_ID, BytesIO(img_data), caption=f"🆔 `{tid}`\n\n{redac}"[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
-        else:
-            await context.bot.send_message(ADMIN_ID, f"🆔 `{tid}`\n\n{redac}", parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        cap = f"🆔 `{tid}`\n\n{redac}"
+        if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        else: await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
         return True
-    except Exception as e:
-        logger.error(f"Error procesando tweet: {e}")
-        return False
+    except: return False
 
-# ─── Tareas en segundo plano ─────────────────────────────────────────────────
+# ─── Monitoreo y Handlers (Ajustados) ────────────────────────────────────────
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
     profundo = context.job.data if context.job and context.job.data else False
-    num_tweets = 12 if profundo else 4
+    num = 10 if profundo else 3
     encontrados = 0
     
-    logger.info(f"--- Iniciando monitoreo Universo Football ---")
-    for cuenta in CUENTAS_X:
-        tweets = fetch_tweets(cuenta, num_tweets)
-        for tweet in tweets:
-            if await procesar_tweet(tweet, context):
-                encontrados += 1
-            await asyncio.sleep(2) # Respetar rate limits
-        await asyncio.sleep(5)
+    for c in CUENTAS_X:
+        items = fetch_tweets_rss(c, num)
+        for item in items:
+            if await procesar_noticia(item, context): encontrados += 1
+            await asyncio.sleep(1)
+        await asyncio.sleep(2)
     
     if encontrados == 0:
-        await context.bot.send_message(ADMIN_ID, "📭 Escaneo finalizado. No hay nada nuevo en xcancel.")
+        await context.bot.send_message(ADMIN_ID, "📭 Sin novedades vía RSS.")
 
-# ─── Handlers ────────────────────────────────────────────────────────────────
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    profundo = True if (context.args and context.args[0] == "2h") else False
-    await update.message.reply_text(f"🔎 Escaneando xcancel.com ({'2h' if profundo else 'reciente'})...")
-    context.job_queue.run_once(monitoreo_wrapper, when=0, data=profundo)
+    await update.message.reply_text("🔎 Escaneando feeds RSS...")
+    context.job_queue.run_once(monitoreo_wrapper, when=0)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    accion, tid = q.data.split(":")
-    
-    if tid in pendientes and accion == "p":
-        item = pendientes[tid]
-        if item["foto"]:
-            await context.bot.send_photo(CHANNEL_ID, BytesIO(item["foto"]), caption=item["texto"][:1024], parse_mode=ParseMode.MARKDOWN)
-        else:
-            await context.bot.send_message(CHANNEL_ID, item["texto"], parse_mode=ParseMode.MARKDOWN)
+    act, tid = q.data.split(":")
+    if tid in pendientes and act == "p":
+        d = pendientes[tid]
+        if d["foto"]: await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"][:1024], parse_mode=ParseMode.MARKDOWN)
+        else: await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.MARKDOWN)
         supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
-    
     if tid in pendientes: del pendientes[tid]
     await q.edit_message_reply_markup(None)
 
-# ─── MAIN ───────────────────────────────────────────────────────────────────
 def main():
-    # Iniciar servidor para Render
     threading.Thread(target=run_http_server, daemon=True).start()
-    
     app = Application.builder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    
-    # Auto-monitoreo cada 15 min
     app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
-    
-    logger.info("🚀 Bot Universo Football (xcancel Edition) Iniciado")
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == "__main__": 
     main()
