@@ -40,58 +40,71 @@ def run_http_server():
 
 # ─── Obtención vía RSS (Gratis y Estable) ────────────────────────────────────
 def fetch_tweets_rss(user, num=5):
-    # Usamos una instancia pública de RSS-Bridge configurada para Twitter
-    # Nota: Si una instancia falla, puedes buscar otra en 'rss-bridge.org'
-    base_url = "https://rssbridge.org/bridge01/" 
-    params = {
-        "action": "display",
-        "bridge": "TwitterBridge",
-        "context": "By username",
-        "u": user,
-        "format": "Atom"
-    }
+    # Lista de instancias públicas de RSS-Bridge (puedes añadir más de rss-bridge.org)
+    instancias = [
+        "https://rssbridge.org/bridge01/",
+        "https://bridge.sysadmin71.ovh/",
+        "https://rss-bridge.snopyta.org/",
+        "https://bridge.mha.fi/"
+    ]
     
-    logger.info(f"📡 Solicitando RSS para @{user}...")
+    # Mezclamos para no saturar siempre la misma
+    random.shuffle(instancias)
     
-    try:
-        r = requests.get(base_url, params=params, timeout=20)
-        if r.status_code != 200:
-            logger.error(f"❌ RSS-Bridge falló: {r.status_code}")
-            return []
-
-        # Parseamos el XML (Atom format)
-        root = ET.fromstring(r.content)
-        # El namespace de Atom es necesario para encontrar los tags
-        ns = {'atom': 'http://www.w3.org/2005/Atom'}
+    for base_url in instancias:
+        params = {
+            "action": "display",
+            "bridge": "TwitterBridge",
+            "context": "By username",
+            "u": user,
+            "format": "Atom"
+        }
         
-        res = []
-        # Buscamos las entradas (tweets)
-        for entry in root.findall('atom:entry', ns)[:num]:
-            title = entry.find('atom:title', ns).text
-            link = entry.find('atom:link', ns).attrib['href']
-            content = entry.find('atom:content', ns).text # Aquí suele venir el texto y la imagen
+        logger.info(f"📡 Intentando RSS para @{user} vía {base_url}...")
+        
+        try:
+            r = requests.get(base_url, params=params, timeout=15)
             
-            # Limpieza básica de HTML en el contenido si es necesario
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(content, "html.parser")
-            texto_limpio = soup.get_text(strip=True)
-            
-            # Intentar extraer imagen del contenido HTML del RSS
-            img_tag = soup.find('img')
-            url_img = img_tag['src'] if img_tag else None
+            # Si la instancia no tiene el TwitterBridge activado o da error, saltamos
+            if r.status_code != 200 or b"xml" not in r.content[:100].lower():
+                logger.warning(f"⚠️ Instancia {base_url} no disponible o formato inválido.")
+                continue
 
-            res.append({
-                "texto": texto_limpio,
-                "url": link,
-                "img": url_img,
-                "user": user
-            })
+            root = ET.fromstring(r.content)
+            ns = {'atom': 'http://www.w3.org/2005/Atom'}
             
-        logger.info(f"✅ RSS: {len(res)} noticias de {user}")
-        return res
-    except Exception as e:
-        logger.error(f"❌ Error en RSS: {e}")
-        return []
+            res = []
+            for entry in root.findall('atom:entry', ns)[:num]:
+                title_elem = entry.find('atom:title', ns)
+                link_elem = entry.find('atom:link', ns)
+                content_elem = entry.find('atom:content', ns)
+                
+                if title_elem is None or link_elem is None: continue
+                
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(content_elem.text if content_elem is not None else "", "html.parser")
+                
+                # Extraer imagen si existe
+                img_tag = soup.find('img')
+                url_img = img_tag['src'] if img_tag else None
+
+                res.append({
+                    "texto": soup.get_text(strip=True),
+                    "url": link_elem.attrib['href'],
+                    "img": url_img,
+                    "user": user
+                })
+            
+            if res:
+                logger.info(f"✅ ÉXITO con {base_url}: {len(res)} noticias.")
+                return res # Salimos del bucle si funcionó
+                
+        except Exception as e:
+            logger.error(f"❌ Error intentando con {base_url}: {str(e)[:50]}")
+            continue
+            
+    logger.error(f"🛑 Todas las instancias de RSS fallaron para {user}.")
+    return []
 
 # ─── Procesamiento e IA (Igual que antes) ───────────────────────────────────
 async def procesar_noticia(n, context):
