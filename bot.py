@@ -14,6 +14,7 @@ from telegram.constants import ParseMode
 
 # ─── Configuración ──────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("universo_football")
 VE_TZ = pytz.timezone("America/Caracas")
 
 TOKEN          = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -29,7 +30,14 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 pendientes = {}
 CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited"]
-NITTER_INSTANCES = ["https://nitter.privacydev.net", "https://nitter.poast.org", "https://nitter.perennialte.ch"]
+# Lista de instancias actualizada y más robusta
+NITTER_INSTANCES = [
+    "https://nitter.net", 
+    "https://nitter.privacydev.net", 
+    "https://nitter.poast.org", 
+    "https://nitter.perennialte.ch",
+    "https://nitter.cz"
+]
 
 # ─── Servidor Keep-Alive ─────────────────────────────────────────────────────
 class RenderKeepAlive(BaseHTTPRequestHandler):
@@ -42,15 +50,24 @@ def run_http_server():
     port = int(os.environ.get("PORT", 8080))
     HTTPServer(("0.0.0.0", port), RenderKeepAlive).serve_forever()
 
-# ─── Scraping ────────────────────────────────────────────────────────────────
+# ─── Scraping con Logs ───────────────────────────────────────────────────────
 def fetch_tweets(user, num=3):
     instance = random.choice(NITTER_INSTANCES)
+    logger.info(f"Probando instancia: {instance} para usuario: {user}")
     try:
-        h = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0"}
-        r = requests.get(f"{instance}/{user}", headers=h, timeout=15)
+        h = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        r = requests.get(f"{instance}/{user}", headers=h, timeout=20)
+        
+        if r.status_code != 200:
+            logger.warning(f"Error {r.status_code} en {instance}")
+            return []
+
         soup = BeautifulSoup(r.text, "html.parser")
+        items = soup.select(".timeline-item")
+        logger.info(f"Encontrados {len(items)} elementos HTML en el timeline")
+        
         res = []
-        for it in soup.select(".timeline-item")[:num]:
+        for it in items[:num]:
             txt = it.select_one(".tweet-content")
             if not txt: continue
             lnk = it.select_one(".tweet-link")
@@ -62,57 +79,69 @@ def fetch_tweets(user, num=3):
                 "user": user
             })
         return res
-    except: return []
+    except Exception as e:
+        logger.error(f"Fallo crítico en fetch_tweets: {e}")
+        return []
 
 async def procesar_tweet(t, context):
     tid = hashlib.md5(t["texto"].encode()).hexdigest()[:12]
-    check = supabase.table("noticias").select("id").eq("identificador_ia", tid).execute()
-    if check.data: return False # Retornamos False si ya existe
+    try:
+        check = supabase.table("noticias").select("id").eq("identificador_ia", tid).execute()
+        if check.data: return False
+    except Exception as e:
+        logger.error(f"Error Supabase: {e}")
+        return False
 
-    tipo = gemini_model.generate_content(f"Di 'fichaje' o 'noticia': {t['texto'][:150]}").text.strip().lower()
-    prompt = f"Redacta para Telegram (Markdown) este {tipo}: {t['texto']}. Fuente: @{t['user']}"
-    redac = gemini_model.generate_content(prompt).text.strip()
-    
-    supabase.table("noticias").insert({"identificador_ia": tid, "url_origen": t["url"], "tipo": tipo, "estado": "pendiente", "texto_final": redac}).execute()
-    
-    img_b = requests.get(t["img"]).content if t["img"] else None
-    pendientes[tid] = {"texto": redac, "foto": img_b}
-    
-    btn = InlineKeyboardMarkup([[InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]])
-    cap = f"🆔 `{tid}`\n\n{redac}"
-    if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
-    else: await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
-    return True # Retornamos True si se procesó correctamente
+    try:
+        tipo = gemini_model.generate_content(f"Responde solo 'fichaje' o 'noticia': {t['texto'][:150]}").text.strip().lower()
+        redac = gemini_model.generate_content(f"Redacta para Telegram este {tipo}: {t['texto']}. Fuente: @{t['user']}").text.strip()
+        
+        supabase.table("noticias").insert({"identificador_ia": tid, "url_origen": t["url"], "tipo": tipo, "estado": "pendiente", "texto_final": redac}).execute()
+        
+        img_b = None
+        if t["img"]:
+            try: img_b = requests.get(t["img"], timeout=10).content
+            except: pass
+
+        pendientes[tid] = {"texto": redac, "foto": img_b}
+        
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]])
+        cap = f"🆔 `{tid}`\n\n{redac}"
+        if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        else: await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        return True
+    except Exception as e:
+        logger.error(f"Error en IA o Envío: {e}")
+        return False
 
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
     profundo = context.job.data if context.job and context.job.data else False
-    num = 10 if profundo else 3
+    num = 12 if profundo else 4
     encontrados = 0
     
-    logging.info(f"--- Iniciando monitoreo (Profundo: {profundo}) ---")
+    logger.info(f"--- Iniciando monitoreo (Profundo: {profundo}) ---")
     for c in CUENTAS_X:
         tweets = fetch_tweets(c, num)
+        if not tweets:
+            logger.info(f"No se pudieron obtener tweets de {c}")
         for t in tweets:
-            fue_procesado = await procesar_tweet(t, context)
-            if fue_procesado: encontrados += 1
-            await asyncio.sleep(random.randint(3, 6))
-        await asyncio.sleep(4)
+            if await procesar_tweet(t, context):
+                encontrados += 1
+            await asyncio.sleep(2)
     
-    # Si después de recorrer todo, no hubo nada nuevo
     if encontrados == 0:
-        await context.bot.send_message(ADMIN_ID, "📭 No se encontró nada nuevo en las cuentas de X.")
+        await context.bot.send_message(ADMIN_ID, "📭 Escaneo finalizado. No se encontró contenido nuevo.")
 
-# ─── Comandos ────────────────────────────────────────────────────────────────
+# ─── Handlers ────────────────────────────────────────────────────────────────
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     profundo = True if (context.args and context.args[0] == "2h") else False
-    msg = "🔎 Escaneo profundo (2h) iniciado..." if profundo else "🔎 Escaneo normal iniciado..."
-    await update.message.reply_text(msg)
+    await update.message.reply_text(f"🔎 Ejecutando escaneo {'profundo' if profundo else 'normal'}...")
     context.job_queue.run_once(monitoreo_wrapper, when=0, data=profundo)
 
 async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    await update.message.reply_text(f"✅ Online - Pendientes: {len(pendientes)}")
+    await update.message.reply_text(f"✅ Online\nCuentas: {len(CUENTAS_X)}\nPendientes: {len(pendientes)}")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -126,20 +155,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if tid in pendientes: del pendientes[tid]
     await q.edit_message_reply_markup(None)
 
-# ─── Main ───────────────────────────────────────────────────────────────────
 def main():
     threading.Thread(target=run_http_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("estado", cmd_estado))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    job_queue = app.job_queue
-    # Escaneo automático cada 15 min
-    job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
-    
+    app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
     app.run_polling()
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
     main()
