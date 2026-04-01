@@ -44,58 +44,65 @@ def run_http_server():
 
 # ─── Scraping vía xcancel.com ────────────────────────────────────────────────
 def fetch_tweets(user, num=5):
+    # Creamos una sesión para mantener cookies (esto ayuda contra el 403)
+    session = requests.Session()
     base_url = "https://xcancel.com"
-    logger.info(f"🔎 Buscando en {base_url}/{user}...")
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3",
+        "Referer": "https://google.com", # Simular que venimos de una búsqueda
         "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
+        "Connection": "keep-alive"
     }
 
     try:
-        r = requests.get(f"{base_url}/{user}", headers=headers, timeout=20)
+        # Primero hacemos una visita a la home para obtener cookies de sesión
+        session.get(base_url, headers=headers, timeout=10)
+        
+        # Ahora intentamos ir al perfil del usuario
+        r = session.get(f"{base_url}/{user}", headers=headers, timeout=15)
+        
+        if r.status_code == 403:
+            logger.error(f"❌ xcancel sigue detectando el bot (403) en {user}")
+            return []
+            
         if r.status_code != 200:
-            logger.error(f"❌ xcancel devolvió error {r.status_code}")
+            logger.error(f"❌ Error {r.status_code} en {user}")
             return []
 
         soup = BeautifulSoup(r.text, "html.parser")
-        # En xcancel, los tweets suelen estar en .timeline-item o .tweet-body
         items = soup.select(".timeline-item")
         
         if not items:
-            logger.warning(f"⚠️ No se detectaron elementos en el timeline de {user}")
-            return []
-
+            # A veces xcancel usa clases diferentes si detecta algo raro
+            items = soup.select(".tweet-body") 
+            
         res = []
         for it in items[:num]:
-            # Extraer texto
-            txt_elem = it.select_one(".tweet-content")
+            txt_elem = it.select_one(".tweet-content") or it.select_one(".tweet-text")
             if not txt_elem: continue
-            texto = txt_elem.get_text(strip=True)
             
-            # Extraer link original
-            lnk_elem = it.select_one(".tweet-link")
+            lnk_elem = it.select_one(".tweet-link") or it.select_one("a[href*='/status/']")
             url_tweet = f"https://x.com{lnk_elem['href']}" if lnk_elem else f"{base_url}/{user}"
             
-            # Extraer imagen (si hay)
-            img_elem = it.select_one(".attachment img")
-            url_img = f"{base_url}{img_elem['src']}" if img_elem else None
+            img_elem = it.select_one(".attachment img") or it.select_one(".tweet-image img")
+            url_img = None
+            if img_elem:
+                src = img_elem.get('src', '')
+                url_img = src if src.startswith('http') else f"{base_url}{src}"
             
             res.append({
-                "texto": texto,
+                "texto": txt_elem.get_text(strip=True),
                 "url": url_tweet,
                 "img": url_img,
                 "user": user
             })
         
-        logger.info(f"✅ Se obtuvieron {len(res)} tweets de {user}")
         return res
     except Exception as e:
-        logger.error(f"❌ Error crítico en xcancel: {e}")
+        logger.error(f"❌ Error en fetch: {e}")
         return []
 
 # ─── Lógica de Procesamiento ─────────────────────────────────────────────────
