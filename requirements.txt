@@ -1,20 +1,9 @@
-# ── Telegram ───────────────────────────────────────────────
 python-telegram-bot==21.6
-
-# ── IA — Google Gemini ─────────────────────────────────────
 google-generativeai==0.7.2
-
-# ── Base de datos — Supabase ───────────────────────────────
 supabase==2.7.4
-
-# ── Scraping ───────────────────────────────────────────────
 requests==2.32.3
 beautifulsoup4==4.12.3
 lxml==5.2.2
-
-# ── Scheduler ─────────────────────────────────────────────
+feedparser==6.0.11
 APScheduler==3.10.4
 pytz==2024.1
-
-# ── HTTP server (keepalive Render/UptimeRobot) ─────────────
-# Incluido en stdlib — no requiere instalación extra
