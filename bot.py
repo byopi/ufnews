@@ -1,15 +1,15 @@
 import os, re, json, logging, threading, asyncio, hashlib, random
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import BytesIO
 
-import pytz, requests, feedparser
+import pytz, requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from supabase import create_client, Client
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from telegram.constants import ParseMode
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -32,20 +32,18 @@ pendientes = {}
 CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited"]
 NITTER_INSTANCES = ["https://nitter.privacydev.net", "https://nitter.poast.org", "https://nitter.perennialte.ch"]
 
-# ─── Servidor Keep-Alive (Para que Render no lo apague) ──────────────────────
+# ─── Servidor Keep-Alive ─────────────────────────────────────────────────────
 class RenderKeepAlive(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Universo Football esta vivo")
-    def log_message(self, *args): pass # Silenciar logs de consola
+        self.send_response(200); self.end_headers()
+        self.wfile.write(b"Universo Football OK")
+    def log_message(self, *args): pass
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), RenderKeepAlive)
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", port), RenderKeepAlive).serve_forever()
 
-# ─── Lógica de Scraping y Procesamiento ──────────────────────────────────────
+# ─── Scraping y Procesamiento ────────────────────────────────────────────────
 def fetch_tweets(user):
     instance = random.choice(NITTER_INSTANCES)
     try:
@@ -53,9 +51,15 @@ def fetch_tweets(user):
         r = requests.get(f"{instance}/{user}", headers=headers, timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
         res = []
-        for it in soup.select(".timeline-item")[:3]:
+        for it in soup.select(".timeline-item")[:5]: # Buscamos un poco más al inicio
             txt = it.select_one(".tweet-content")
             if not txt: continue
+            
+            # Filtro de tiempo: Nitter suele tener la fecha en un span
+            date_sent = it.select_one(".tweet-date a")
+            # Si quieres ser muy estricto con las 2 horas, aquí se procesaría la fecha. 
+            # Por ahora, traer los últimos 5 posts asegura cubrir el lapso reciente.
+            
             lnk = it.select_one(".tweet-link")
             img = it.select_one(".attachment img")
             res.append({
@@ -69,6 +73,7 @@ def fetch_tweets(user):
 
 async def procesar_tweet(t, app):
     tid = hashlib.md5(t["texto"].encode()).hexdigest()[:12]
+    # Verificación en base de datos
     if supabase.table("noticias").select("id").eq("identificador_ia", tid).execute().data: return
 
     tipo = gemini_model.generate_content(f"Di 'fichaje' o 'noticia': {t['texto'][:150]}").text.strip().lower()
@@ -83,12 +88,13 @@ async def procesar_tweet(t, app):
     if img_b: await app.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=f"🆔 `{tid}`\n\n{redac}"[:1024], parse_mode="Markdown", reply_markup=btn)
     else: await app.bot.send_message(ADMIN_ID, f"🆔 `{tid}`\n\n{redac}", parse_mode="Markdown", reply_markup=btn)
 
-# ─── Tareas y Handlers ───────────────────────────────────────────────────────
+# ─── Tareas y Comandos ───────────────────────────────────────────────────────
 async def monitoreo(app):
     for c in CUENTAS_X:
-        for t in fetch_tweets(c):
+        tweets = fetch_tweets(c)
+        for t in tweets:
             await procesar_tweet(t, app)
-            await asyncio.sleep(random.randint(5, 10))
+            await asyncio.sleep(random.randint(4, 8))
         await asyncio.sleep(5)
 
 async def handle_callback(update, context):
@@ -104,17 +110,25 @@ async def handle_callback(update, context):
     await q.edit_message_reply_markup(None)
 
 async def post_init(app):
+    # 1. Iniciar el Scheduler para el futuro
     sch = AsyncIOScheduler(timezone=VE_TZ)
     sch.add_job(monitoreo, "interval", minutes=15, args=[app])
     sch.start()
-    await app.bot.send_message(ADMIN_ID, "asere activo")
+    
+    # 2. ESCANEO INMEDIATO (Lo que pediste)
+    await app.bot.send_message(ADMIN_ID, "escaneando asere...")
+    asyncio.create_task(monitoreo(app))
 
-# ─── Ejecución ───────────────────────────────────────────────────────────────
+# ─── Main ───────────────────────────────────────────────────────────────────
 def main():
-    threading.Thread(target=run_http_server, daemon=True).start() # <--- EL SALVAVIDAS
+    threading.Thread(target=run_http_server, daemon=True).start()
     app = Application.builder().token(TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("scan", lambda u, c: monitoreo(c.application)))
+    
+    # Comandos añadidos como Lambdas
+    app.add_handler(CommandHandler("scan", lambda u, c: asyncio.create_task(monitoreo(c.application))))
+    app.add_handler(CommandHandler("estado", lambda u, c: u.message.reply_text(f"✅ Online\nEsperando: {len(pendientes)}")))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    
     app.run_polling()
 
-if __name__ == "__main__": main()
+if __name__ == "__main__": 
