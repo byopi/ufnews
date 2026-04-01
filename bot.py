@@ -9,7 +9,7 @@ import google.generativeai as genai
 from supabase import create_client, Client
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.constants import ParseMode
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -44,22 +44,17 @@ def run_http_server():
     HTTPServer(("0.0.0.0", port), RenderKeepAlive).serve_forever()
 
 # ─── Scraping y Procesamiento ────────────────────────────────────────────────
-def fetch_tweets(user):
+def fetch_tweets(user, num_tweets=3):
     instance = random.choice(NITTER_INSTANCES)
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0"}
         r = requests.get(f"{instance}/{user}", headers=headers, timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
         res = []
-        for it in soup.select(".timeline-item")[:5]: # Buscamos un poco más al inicio
+        # Si pedimos "2h", aumentamos el rango de búsqueda en el feed
+        for it in soup.select(".timeline-item")[:num_tweets]:
             txt = it.select_one(".tweet-content")
             if not txt: continue
-            
-            # Filtro de tiempo: Nitter suele tener la fecha en un span
-            date_sent = it.select_one(".tweet-date a")
-            # Si quieres ser muy estricto con las 2 horas, aquí se procesaría la fecha. 
-            # Por ahora, traer los últimos 5 posts asegura cubrir el lapso reciente.
-            
             lnk = it.select_one(".tweet-link")
             img = it.select_one(".attachment img")
             res.append({
@@ -71,9 +66,8 @@ def fetch_tweets(user):
         return res
     except: return []
 
-async def procesar_tweet(t, app):
+async def procesar_tweet(t, context):
     tid = hashlib.md5(t["texto"].encode()).hexdigest()[:12]
-    # Verificación en base de datos
     if supabase.table("noticias").select("id").eq("identificador_ia", tid).execute().data: return
 
     tipo = gemini_model.generate_content(f"Di 'fichaje' o 'noticia': {t['texto'][:150]}").text.strip().lower()
@@ -85,20 +79,42 @@ async def procesar_tweet(t, app):
     pendientes[tid] = {"texto": redac, "foto": img_b}
     
     btn = InlineKeyboardMarkup([[InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]])
-    if img_b: await app.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=f"🆔 `{tid}`\n\n{redac}"[:1024], parse_mode="Markdown", reply_markup=btn)
-    else: await app.bot.send_message(ADMIN_ID, f"🆔 `{tid}`\n\n{redac}", parse_mode="Markdown", reply_markup=btn)
+    if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=f"🆔 `{tid}`\n\n{redac}"[:1024], parse_mode="Markdown", reply_markup=btn)
+    else: await context.bot.send_message(ADMIN_ID, f"🆔 `{tid}`\n\n{redac}", parse_mode="Markdown", reply_markup=btn)
 
-# ─── Tareas y Comandos ───────────────────────────────────────────────────────
-async def monitoreo(app):
+# ─── Tareas ──────────────────────────────────────────────────────────────────
+async def monitoreo(context, profundo=False):
+    # Si es profundo (2h), buscamos los últimos 10 tweets, si no, solo 3.
+    cantidad = 10 if profundo else 3
+    logging.info(f"--- Iniciando monitoreo (Profundo: {profundo}) ---")
     for c in CUENTAS_X:
-        tweets = fetch_tweets(c)
+        tweets = fetch_tweets(c, cantidad)
         for t in tweets:
-            await procesar_tweet(t, app)
-            await asyncio.sleep(random.randint(4, 8))
-        await asyncio.sleep(5)
+            await procesar_tweet(t, context)
+            await asyncio.sleep(random.randint(3, 6))
+        await asyncio.sleep(4)
 
-async def handle_callback(update, context):
+# ─── Handlers de Comandos ────────────────────────────────────────────────────
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    
+    profundo = False
+    msg = "🔎 Escaneando noticias recientes..."
+    
+    if context.args and context.args[0].lower() == "2h":
+        profundo = True
+        msg = "🔎 *Escaneando últimas 2 horas* (Búsqueda profunda)..."
+    
+    await update.message.reply_text(msg, parse_mode="Markdown")
+    asyncio.create_task(monitoreo(context, profundo))
+
+async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    await update.message.reply_text(f"✅ *Bot Online*\nEsperando aprobación: `{len(pendientes)}`", parse_mode="Markdown")
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    if q.from_user.id != ADMIN_ID: return
     await q.answer()
     act, tid = q.data.split(":")
     if tid in pendientes and act == "p":
@@ -109,27 +125,25 @@ async def handle_callback(update, context):
     if tid in pendientes: del pendientes[tid]
     await q.edit_message_reply_markup(None)
 
-async def post_init(app):
-    # 1. Iniciar el Scheduler para el futuro
+async def post_init(app: Application):
     sch = AsyncIOScheduler(timezone=VE_TZ)
-    sch.add_job(monitoreo, "interval", minutes=15, args=[app])
+    # Tarea automática normal cada 15 min
+    sch.add_job(lambda: asyncio.run_coroutine_threadsafe(monitoreo(ContextTypes.DEFAULT_TYPE(app)), asyncio.get_running_loop()), "interval", minutes=15)
     sch.start()
-    
-    # 2. ESCANEO INMEDIATO (Lo que pediste)
-    await app.bot.send_message(ADMIN_ID, "escaneando asere...")
-    asyncio.create_task(monitoreo(app))
+    await app.bot.send_message(ADMIN_ID,"🟢 *Bot iniciado asere*\n\n"
+                "/estado — Estado del bot\n"
+                "/pendientes — Noticias en espera\n"
+                "/scan — Forzar escaneo ahora"
+                "/scan 'N°h' — Fuerza el escaneo desde publicaciones de horas anteriores")
 
 # ─── Main ───────────────────────────────────────────────────────────────────
 def main():
     threading.Thread(target=run_http_server, daemon=True).start()
     app = Application.builder().token(TOKEN).post_init(post_init).build()
-    
-    # Comandos añadidos como Lambdas
-    app.add_handler(CommandHandler("scan", lambda u, c: asyncio.create_task(monitoreo(c.application))))
-    app.add_handler(CommandHandler("estado", lambda u, c: u.message.reply_text(f"✅ Online\nEsperando: {len(pendientes)}")))
+    app.add_handler(CommandHandler("scan", cmd_scan))
+    app.add_handler(CommandHandler("estado", cmd_estado))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == "__main__": 
     main()
