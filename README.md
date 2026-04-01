@@ -58,12 +58,10 @@ CREATE TABLE noticias (
 
 ### Paso 4 — UptimeRobot (mantener 24/7)
 
-Igual que tu bot BCV:
-
 1. Ve a [uptimerobot.com](https://uptimerobot.com)
 2. **New Monitor**:
    - Tipo: `HTTP(s)`
-   - URL: `https://universo-football-bot.onrender.com` *(tu URL de Render)*
+   - URL: `*(tu URL de Render)*`
    - Intervalo: `5 minutos`
 3. Guarda — el bot nunca dormirá.
 
