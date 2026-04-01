@@ -17,12 +17,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("universo_football")
 VE_TZ = pytz.timezone("America/Caracas")
 
-TOKEN          = os.environ["TOKEN"]
-ADMIN_ID       = int(os.environ["ADMIN_ID"])
-CHANNEL_ID     = os.environ["CHANNEL_ID"]
-SUPABASE_URL   = os.environ["SUPABASE_URL"]
-SUPABASE_KEY   = os.environ["SUPABASE_KEY"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+ADMIN_ID           = int(os.environ["ADMIN_ID"])
+CHANNEL_ID         = os.environ["CHANNEL_ID"]
+SUPABASE_URL       = os.environ["SUPABASE_URL"]
+SUPABASE_KEY       = os.environ["SUPABASE_KEY"]
+GEMINI_API_KEY     = os.environ["GEMINI_API_KEY"]
 
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel("gemini-1.5-flash")
