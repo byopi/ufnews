@@ -22,17 +22,17 @@ SUPABASE_URL   = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY   = os.environ.get("SUPABASE_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# --- CONFIGURACIÓN GEMINI (FORZADO PARA EVITAR 404) ---
-try:
-    # Forzamos el transporte 'rest' para evitar conflictos de v1beta en Render
-    genai.configure(api_key=GEMINI_API_KEY, transport='rest')
-    
-    gemini_model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash"
-    )
-    logger.info("✅ Configuración de Gemini cargada correctamente")
-except Exception as e:
-    logger.error(f"❌ Error al configurar Gemini: {e}")
+# --- CONFIGURACIÓN GEMINI (SOLUCIÓN DEFINITIVA PARA RENDER) ---
+genai.configure(api_key=GEMINI_API_KEY, transport='rest')
+
+# Cambiamos el nombre exacto para forzar la versión estable v1
+MODEL_NAME = "gemini-1.5-flash-latest" 
+
+gemini_model = genai.GenerativeModel(
+    model_name=MODEL_NAME
+)
+
+logger.info(f"✅ Configuración forzada: {MODEL_NAME}")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
