@@ -22,7 +22,7 @@ SUPABASE_KEY   = os.environ.get("SUPABASE_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+gemini_model = genai.GenerativeModel("models/gemini-1.5-flash")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited"]
@@ -97,8 +97,9 @@ def fetch_tweets_rss(user, num=5):
 # ─── Comandos Solicitados ────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
+        
     msg = (
-        "**🟢 Bot iniciado asere**\n\n"
+        "*🟢 Bot iniciado asere*\n\n"
         "/estado — Estado del bot\n"
         "/pendientes — Noticias en espera\n"
         "/scan — Forzar escaneo ahora\n"
@@ -211,13 +212,19 @@ async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
                 encontrados_nuevos += 1
             await asyncio.sleep(1)
 
-    # Si terminó y no hay nada, avisa al admin para que no te quedes esperando
     if encontrados_nuevos == 0:
+        texto_scan = (
+            "📭 *Escaneo finalizado*\n"
+            f"Revisados: *{totales_revisados} posts.*\n"
+            "Nuevos para aprobar: *0.*\n\n"
+            "_Si esto sigue en 0, es probable que xcancel esté bloqueando la IP de Render._"
+        )
         await context.bot.send_message(
             ADMIN_ID, 
-            f"📭 **Escaneo finalizado**\nRevisados: {totales_revisados} posts.\nNuevos para aprobar: 0.\n\n_Si esto sigue en 0, es probable que xcancel esté bloqueando la IP de Render._"
+            texto_scan, 
+            parse_mode=ParseMode.MARKDOWN
         )
-
+        
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     h = context.args[0] if context.args else "recientes"
