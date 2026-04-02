@@ -22,7 +22,6 @@ SUPABASE_URL   = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY   = os.environ.get("SUPABASE_KEY")
 GROQ_API_KEY   = os.environ.get("GROQ_API_KEY")
 
-# Clientes
 client_groq = Groq(api_key=GROQ_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -46,8 +45,7 @@ def fetch_tweets_rss(user, num=5):
         f"https://nitter.net/{user}/rss",
         f"https://xcancel.com/{user}/rss",
         f"https://nitter.cz/{user}/rss",
-        f"https://nitter.privacydev.net/{user}/rss",
-        f"https://nitter.no-logs.com/{user}/rss"
+        f"https://nitter.privacydev.net/{user}/rss"
     ]
     random.shuffle(instancias)
     palabras_basura = ["whitelist", "ignore", "rss reader", "send an email", "plain request"]
@@ -73,7 +71,7 @@ def fetch_tweets_rss(user, num=5):
 # ─── Comandos ───────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    msg = "*🟢 Bot iniciado asere*\n\n/estado — Estado\n/pendientes — En espera\n/scan — Forzar ahora"
+    msg = "*🟢 Bot iniciado*\n\n/estado — Estado\n/pendientes — En espera\n/scan — Forzar ahora"
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,33 +91,33 @@ async def procesar_noticia(n, context):
         if existe.data: return False
     except: return False
 
-# 2. IA con GROQ (Prompt Ultra-Corto y Directo)
+    # 2. IA con GROQ (Prompt Ultra-Corto)
     try:
         logger.info(f"🤖 Redactando noticia {tid} con Groq...")
         completion = client_groq.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor de 'Universo Football'. Tu estilo es minimalista, rápido y visual.\n\n"
+                    "Eres el redactor jefe de 'Universo Football'. Estilo minimalista y visual.\n\n"
                     "ESTRUCTURA OBLIGATORIA:\n"
                     "1. Titular impactante en NEGRITA con emojis (Ej: 🚨🇮🇹 | **Buffon renuncia a su cargo**).\n"
                     "2. Un salto de línea.\n"
-                    "3. Cuerpo de la noticia: Máximo 2 o 3 frases, CADA UNA en su propia línea y empezando con un emoji (❌, 😳, ➡️, ✍️).\n"
+                    "3. Cuerpo: Máximo 2 o 3 líneas cortas, cada una con un emoji al inicio.\n"
                     "4. Un salto de línea.\n"
                     "5. Firma en NEGRITA: 📲 **Suscríbete en t.me/iUniversoFootball**\n\n"
-                    "REGLAS CRÍTICAS:\n"
-                    "- Sé MUY breve. No expliques de más, ve al grano.\n"
-                    "- Usa negritas (**) para nombres propios y equipos.\n"
-                    "- Solo UN espacio de línea antes de la firma.\n"
-                    "- NUNCA uses hashtags ni introducciones."
+                    "REGLAS:\n"
+                    "- Sé MUY breve. Una línea por cada hecho.\n"
+                    "- No digas 'Aquí tienes'. No uses hashtags."
                 )},
-                {"role": "user", "content": f"Resume y parafrasea esto de forma ultra corta: {n['texto']}"}
+                {"role": "user", "content": f"Resume y parafrasea de forma ultra corta: {n['texto']}"}
             ],
-            temperature=0.5, # Menor temperatura para que sea menos 'hablador'
+            temperature=0.5,
             max_tokens=300
         )
         redac = completion.choices[0].message.content.strip()
-        logger.info(f"✅ Redacción corta de Groq lista.")
+    except Exception as e:
+        logger.error(f"❌ Error Groq: {e}")
+        redac = f"📢 **NOTICIA** (@{n['user']})\n\n{n['texto']}\n\n📲 **Suscríbete en t.me/iUniversoFootball**"
 
     # 3. Guardar en Supabase
     try:
@@ -141,16 +139,18 @@ async def procesar_noticia(n, context):
             except: pass
 
         pendientes[tid] = {"texto": redac, "foto": img_b}
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]])
+        btn = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), 
+            InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")
+        ]])
+        
         cap = f"🆔 `{tid}`\n\n{redac}"
         if img_b:
             await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
         else:
             await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
         return True
-    except Exception as e:
-        logger.error(f"❌ Error al enviar al Admin: {e}")
-        return False
+    except: return False
 
 # ─── Monitoreo ──────────────────────────────────────────────────────────────
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
@@ -161,25 +161,25 @@ async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
         for item in items:
             if await procesar_noticia(item, context): encontrados += 1
             await asyncio.sleep(2)
-    if encontrados == 0:
-        logger.info("Escaneo finalizado sin novedades.")
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    await update.message.reply_text("🔎 *Escaneando...*", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("🔎 *Escaneando ahora mismo...*")
     context.job_queue.run_once(monitoreo_wrapper, when=0)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    await q.answer()
     act, tid = q.data.split(":")
     if tid in pendientes and act == "p":
         d = pendientes[tid]
         try:
-            if d["foto"]: await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.MARKDOWN)
-            else: await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.MARKDOWN)
+            if d["foto"]: 
+                await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.MARKDOWN)
+            else: 
+                await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.MARKDOWN)
             supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
-        except Exception as e:
-            logger.error(f"❌ Error al publicar: {e}")
+        except: pass
     if tid in pendientes: del pendientes[tid]
     await q.edit_message_reply_markup(None)
 
@@ -194,5 +194,5 @@ def main():
     app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
     app.run_polling()
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
     main()
