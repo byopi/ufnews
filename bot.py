@@ -122,12 +122,12 @@ async def procesar_noticia(n, context):
         logger.error(f"❌ Error consultando Supabase: {e}")
         return False
 
-    # 2. IA (Llamada DIRECTA por HTTP para evitar el Error 404 de la v1beta)
+# 2. IA (Llamada DIRECTA al modelo más estable para evitar el 404)
     try:
-        logger.info(f"🤖 Redactando noticia {tid} vía API Directa (v1)...")
+        logger.info(f"🤖 Redactando noticia {tid} con Gemini 1.0 Pro...")
         
-        # Intento con v1beta y el alias limpio (A veces la v1 está restringida)
-        url_api = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # Usamos gemini-1.0-pro porque el 1.5 está dando problemas de visibilidad en tu API Key
+        url_api = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.0-pro:generateContent?key={GEMINI_API_KEY}"
         
         payload = {
             "contents": [{
@@ -137,7 +137,7 @@ async def procesar_noticia(n, context):
                         f"Redacta un post para Telegram basado en esto: {n['texto']}. "
                         f"Fuente: @{n['user']}. "
                         f"Reglas: Usa negritas para equipos y jugadores. Termina con un hashtag futbolero. "
-                        f"No incluyas saludos ni introducciones."
+                        f"No incluyas introducciones."
                     )
                 }]
             }]
@@ -147,15 +147,17 @@ async def procesar_noticia(n, context):
         res_json = response.json()
 
         if response.status_code == 200:
-            # Extraer el texto de la estructura de respuesta de Google
             redac = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
-            logger.info(f"✅ ¡POR FIN! Gemini redactó con éxito: {tid}")
+            logger.info(f"✅ ¡LOGRADO! Redacción completada para {tid}")
         else:
-            logger.error(f"❌ Fallo en API Directa: {response.status_code} - {response.text}")
-            return False
+            # Si falla, imprimimos el error pero intentamos una última vez con flash-latest por si acaso
+            logger.error(f"❌ Fallo con 1.0 Pro: {response.status_code}. Intentando bypass final...")
+            url_backup = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+            response = requests.post(url_backup, json=payload, timeout=15)
+            redac = response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
 
     except Exception as e:
-        logger.error(f"❌ Error en el proceso de IA: {e}")
+        logger.error(f"❌ Error definitivo en la IA: {e}")
         return False
 
     # 3. Intentar insertar en Supabase
