@@ -43,7 +43,6 @@ def run_http_server():
 def fetch_tweets_rss(user, num=5):
     instancias = [f"https://nitter.net/{user}/rss", f"https://xcancel.com/{user}/rss", f"https://nitter.cz/{user}/rss"]
     random.shuffle(instancias)
-    palabras_basura = ["whitelist", "ignore", "rss reader", "send an email"]
     for url in instancias:
         try:
             feed = feedparser.parse(url, agent='Mozilla/5.0')
@@ -52,14 +51,14 @@ def fetch_tweets_rss(user, num=5):
                 for entry in feed.entries[:num]:
                     soup = BeautifulSoup(entry.get('description', ''), "html.parser")
                     texto = soup.get_text(strip=True)
-                    if any(bad in texto.lower() for bad in palabras_basura): continue
+                    if not texto or "rss reader" in texto.lower(): continue
                     img = soup.find('img')['src'] if soup.find('img') else None
                     res.append({"texto": texto, "url": entry.link, "img": img, "user": user})
                 if res: return res
         except: continue
     return []
 
-# ─── Lógica de Procesamiento ──────────────────────────────────────────────────
+# ─── Lógica de Procesamiento (PROMPT CORREGIDO) ────────────────────────────────
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
@@ -71,23 +70,24 @@ async def procesar_noticia(n, context):
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor de 'Universo Football'. Estilo FLASH.\n\n"
+                    "Eres el redactor jefe de 'Universo Football'. Estilo visual impecable.\n\n"
                     "FORMATO HTML ESTRICTO:\n"
-                    "1. Titular en negrita <b>...</b> con emojis.\n"
-                    "2. Salto de línea doble.\n"
-                    "3. Cuerpo: Máximo 2 hechos cortos. Cada uno en su línea con un emoji.\n"
-                    "4. Salto de línea doble.\n"
-                    "5. FUENTE: Si el texto menciona una fuente (ej. Fabrizio, MARCA, @usuario), ponlo así: ℹ️ » Fuente.\n"
+                    "1. Titular en negrita con emojis AL INICIO (Ej: 🚨🇳🇴 | <b>Ruben Alte se une al Sandefjord</b>)\n"
+                    "2. Doble salto de línea.\n"
+                    "3. Cuerpo: Máximo 2 hechos cortos. Los emojis SIEMPRE VAN AL INICIO de la frase, nunca al final. (Ej: 📝 El jugador firma...).\n"
+                    "4. Salto de línea SIMPLE.\n"
+                    "5. FUENTE: Solo si el tweet menciona una fuente (ej. Fabrizio, MARCA, un medio), ponlo así: ℹ️ » Fuente. Si no hay fuente clara, NO PONGAS NADA.\n"
                     "6. Salto de línea SIMPLE.\n"
                     "7. Firma en negrita: 📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
-                    "REGLAS:\n"
-                    "- Máximo 2 líneas por párrafo.\n"
+                    "REGLAS DE ORO:\n"
+                    "- Emojis siempre antes del texto.\n"
+                    "- Máximo 2 líneas por hecho.\n"
                     "- Usa solo etiquetas <b></b> para negritas.\n"
-                    "- Si no hay fuente clara, omite ese paso."
+                    "- Respeta los espacios solicitados."
                 )},
-                {"role": "user", "content": f"Parafrasea esta noticia en HTML siguiendo el formato: {n['texto']}"}
+                {"role": "user", "content": f"Parafrasea esta noticia en HTML para Telegram: {n['texto']}"}
             ],
-            temperature=0.3
+            temperature=0.2
         )
         redac = completion.choices[0].message.content.strip()
     except:
@@ -113,7 +113,7 @@ async def procesar_noticia(n, context):
         return True
     except: return False
 
-# ─── Handlers ────────────────────────────────────────────────────────────────
+# ─── Handlers e Interfaz ─────────────────────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     act, tid = q.data.split(":")
@@ -130,7 +130,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del pendientes[tid]; await q.delete_message()
     elif act == "f":
         esperando_foto[ADMIN_ID] = tid
-        await context.bot.send_message(ADMIN_ID, "📸 Pásame la nueva foto:")
+        await context.bot.send_message(ADMIN_ID, "📸 Pásame la nueva foto para esta noticia:")
 
 async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID or ADMIN_ID not in esperando_foto: return
@@ -143,7 +143,7 @@ async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("🔎 Escaneando..."); context.job_queue.run_once(monitoreo_wrapper, when=0)
+        await update.message.reply_text("🔎 Escaneando fuentes..."); context.job_queue.run_once(monitoreo_wrapper, when=0)
 
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
     for c in CUENTAS_X:
@@ -160,5 +160,5 @@ def main():
     app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == "__main__": 
     main()
