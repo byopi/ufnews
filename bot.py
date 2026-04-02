@@ -1,12 +1,11 @@
 import os, hashlib, requests, logging, threading, asyncio, random
-import xml.etree.ElementTree as ET
 from io import BytesIO
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from groq import Groq
 from supabase import create_client, Client
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode
 from bs4 import BeautifulSoup
 import feedparser
@@ -27,6 +26,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited"]
 pendientes = {}
+esperando_foto = {} # Para el cambio de imagen
 
 # ─── Servidor Keep-Alive ─────────────────────────────────────────────────────
 class RenderKeepAlive(BaseHTTPRequestHandler):
@@ -41,158 +41,119 @@ def run_http_server():
 
 # ─── Obtención de RSS ────────────────────────────────────────────────────────
 def fetch_tweets_rss(user, num=5):
-    instancias = [
-        f"https://nitter.net/{user}/rss",
-        f"https://xcancel.com/{user}/rss",
-        f"https://nitter.cz/{user}/rss",
-        f"https://nitter.privacydev.net/{user}/rss"
-    ]
+    instancias = [f"https://nitter.net/{user}/rss", f"https://xcancel.com/{user}/rss", f"https://nitter.cz/{user}/rss"]
     random.shuffle(instancias)
-    palabras_basura = ["whitelist", "ignore", "rss reader", "send an email", "plain request"]
-
+    palabras_basura = ["whitelist", "ignore", "rss reader", "send an email"]
     for url in instancias:
         try:
-            feed = feedparser.parse(url, agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) NewsReader/1.0')
+            feed = feedparser.parse(url, agent='Mozilla/5.0')
             if len(feed.entries) > 0:
                 res = []
                 for entry in feed.entries[:num]:
-                    content = entry.get('description', entry.get('summary', ''))
-                    soup = BeautifulSoup(content, "html.parser")
-                    texto_limpio = soup.get_text(strip=True)
-                    if not texto_limpio: texto_limpio = entry.get('title', '')
-                    if any(bad in texto_limpio.lower() for bad in palabras_basura): continue
-                    img_tag = soup.find('img')
-                    url_img = img_tag['src'] if img_tag else None
-                    res.append({"texto": texto_limpio, "url": entry.link, "img": url_img, "user": user})
+                    soup = BeautifulSoup(entry.get('description', ''), "html.parser")
+                    texto = soup.get_text(strip=True)
+                    if any(bad in texto.lower() for bad in palabras_basura): continue
+                    img = soup.find('img')['src'] if soup.find('img') else None
+                    res.append({"texto": texto, "url": entry.link, "img": img, "user": user})
                 if res: return res
         except: continue
     return []
-
-# ─── Comandos ───────────────────────────────────────────────────────────────
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    msg = "*🟢 Bot iniciado*\n\n/estado — Estado\n/pendientes — En espera\n/scan — Forzar ahora"
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
-
-async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    count = supabase.table("noticias").select("id", count="exact").execute().count
-    await update.message.reply_text(f"✅ *En línea*\n📊 Total en DB: *{count}*")
-
-async def cmd_pendientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    await update.message.reply_text(f"📝 Tienes *{len(pendientes)}* noticias esperando.")
 
 # ─── Lógica de Procesamiento ──────────────────────────────────────────────────
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
-        existe = supabase.table("noticias").select("id").eq("identificador_ia", tid).execute()
-        if existe.data: return False
+        if supabase.table("noticias").select("id").eq("identificador_ia", tid).execute().data: return False
     except: return False
 
-    # 2. IA con GROQ (Prompt Ultra-Corto)
     try:
-        logger.info(f"🤖 Redactando noticia {tid} con Groq...")
         completion = client_groq.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor jefe de 'Universo Football'. Estilo minimalista y visual.\n\n"
-                    "ESTRUCTURA OBLIGATORIA:\n"
-                    "1. Titular impactante en NEGRITA con emojis (Ej: 🚨🇮🇹 | **Buffon renuncia a su cargo**).\n"
-                    "2. Un salto de línea.\n"
-                    "3. Cuerpo: Máximo 2 o 3 líneas cortas, cada una con un emoji al inicio.\n"
-                    "4. Un salto de línea.\n"
-                    "5. Firma en NEGRITA: 📲 **Suscríbete en t.me/iUniversoFootball**\n\n"
-                    "REGLAS:\n"
-                    "- Sé MUY breve. Una línea por cada hecho.\n"
-                    "- No digas 'Aquí tienes'. No uses hashtags."
+                    "Eres el redactor de 'Universo Football'. Estilo flash.\n"
+                    "FORMATO ESTRICTO (USA ** PARA NEGRITAS):\n"
+                    "1. Titular en negrita con emojis (Ej: 🚨🇮🇹 | **Buffon deja la selección**)\n"
+                    "2. Salto de línea.\n"
+                    "3. Dos hechos cortos (2 líneas máximo), cada uno con un emoji.\n"
+                    "4. Salto de línea.\n"
+                    "5. Firma en negrita: 📲 **Suscríbete en t.me/iUniversoFootball**"
                 )},
-                {"role": "user", "content": f"Resume y parafrasea de forma ultra corta: {n['texto']}"}
+                {"role": "user", "content": f"Resume en 2 líneas esta noticia: {n['texto']}"}
             ],
-            temperature=0.5,
-            max_tokens=300
+            temperature=0.4
         )
         redac = completion.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"❌ Error Groq: {e}")
-        redac = f"📢 **NOTICIA** (@{n['user']})\n\n{n['texto']}\n\n📲 **Suscríbete en t.me/iUniversoFootball**"
+    except:
+        redac = f"📢 **NOTICIA**\n\n{n['texto']}\n\n📲 **Suscríbete en t.me/iUniversoFootball**"
 
-    # 3. Guardar en Supabase
     try:
-        supabase.table("noticias").insert({
-            "identificador_ia": tid, "url_origen": n["url"], 
-            "estado": "pendiente", "texto_final": redac
-        }).execute()
-    except Exception as e:
-        logger.error(f"❌ Error Supabase: {e}")
-        return False
-    
-    # 4. Enviar al Admin
-    try:
+        supabase.table("noticias").insert({"identificador_ia": tid, "url_origen": n["url"], "estado": "pendiente", "texto_final": redac}).execute()
         img_b = None
         if n["img"]:
-            try:
-                r_img = requests.get(n["img"], timeout=10)
-                if r_img.status_code == 200: img_b = r_img.content
-            except: pass
+            r = requests.get(n["img"], timeout=10)
+            if r.status_code == 200: img_b = r.content
 
         pendientes[tid] = {"texto": redac, "foto": img_b}
-        btn = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), 
-            InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")
-        ]])
-        
+        btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")],
+            [InlineKeyboardButton("🖼 CAMBIAR IMG", callback_data=f"f:{tid}")]
+        ])
         cap = f"🆔 `{tid}`\n\n{redac}"
-        if img_b:
-            await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
-        else:
-            await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        else: await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
         return True
     except: return False
 
-# ─── Monitoreo ──────────────────────────────────────────────────────────────
+# ─── Handlers de Imagen y Callbacks ──────────────────────────────────────────
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    act, tid = q.data.split(":")
+    if tid not in pendientes: return
+
+    if act == "p":
+        d = pendientes[tid]
+        if d["foto"]: await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.MARKDOWN)
+        else: await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.MARKDOWN)
+        supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
+        del pendientes[tid]
+        await q.edit_message_reply_markup(None)
+    
+    elif act == "d":
+        del pendientes[tid]; await q.delete_message()
+
+    elif act == "f":
+        esperando_foto[ADMIN_ID] = tid
+        await context.bot.send_message(ADMIN_ID, "📸 Pásame la nueva foto para esta noticia:")
+
+async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID or ADMIN_ID not in esperando_foto: return
+    tid = esperando_foto.pop(ADMIN_ID)
+    foto = await update.message.photo[-1].get_file()
+    f_byte = await foto.download_as_bytearray()
+    if tid in pendientes:
+        pendientes[tid]["foto"] = bytes(f_byte)
+        await update.message.reply_text(f"✅ Foto actualizada para la noticia `{tid}`. Ya puedes darle a PUBLICAR arriba.")
+
+# ─── Resto de Comandos ───────────────────────────────────────────────────────
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text("🔎 Escaneando..."); context.job_queue.run_once(monitoreo_wrapper, when=0)
+
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("--- Iniciando Monitoreo Universo Football ---")
-    encontrados = 0
     for c in CUENTAS_X:
         items = fetch_tweets_rss(c)
         for item in items:
-            if await procesar_noticia(item, context): encontrados += 1
-            await asyncio.sleep(2)
-
-async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    await update.message.reply_text("🔎 *Escaneando ahora mismo...*")
-    context.job_queue.run_once(monitoreo_wrapper, when=0)
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    act, tid = q.data.split(":")
-    if tid in pendientes and act == "p":
-        d = pendientes[tid]
-        try:
-            if d["foto"]: 
-                await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.MARKDOWN)
-            else: 
-                await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.MARKDOWN)
-            supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
-        except: pass
-    if tid in pendientes: del pendientes[tid]
-    await q.edit_message_reply_markup(None)
+            if await procesar_noticia(item, context): await asyncio.sleep(2)
 
 def main():
     threading.Thread(target=run_http_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("estado", cmd_estado))
-    app.add_handler(CommandHandler("pendientes", cmd_pendientes))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.PHOTO, recibir_foto))
     app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == "__main__": 
     main()
