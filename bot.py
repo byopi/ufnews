@@ -22,7 +22,7 @@ SUPABASE_URL   = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY   = os.environ.get("SUPABASE_KEY")
 GROQ_API_KEY   = os.environ.get("GROQ_API_KEY")
 
-# Configuración de Groq y Supabase
+# Clientes
 client_groq = Groq(api_key=GROQ_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -40,14 +40,20 @@ def run_http_server():
     port = int(os.environ.get("PORT", 8080))
     HTTPServer(("0.0.0.0", port), RenderKeepAlive).serve_forever()
 
-# ─── Obtención de RSS ────────────────────────────────────────────────────────
+# ─── Obtención de RSS (Con Filtro Anti-Bloqueo) ──────────────────────────────
 def fetch_tweets_rss(user, num=5):
     instancias = [
         f"https://nitter.net/{user}/rss",
         f"https://xcancel.com/{user}/rss",
+        f"https://nitter.cz/{user}/rss",
+        f"https://nitter.privacydev.net/{user}/rss",
         f"https://nitter.no-logs.com/{user}/rss"
     ]
     random.shuffle(instancias)
+    
+    # Palabras que indican que la instancia nos está bloqueando
+    palabras_basura = ["whitelist", "ignore", "rss reader", "send an email", "plain request"]
+
     for url in instancias:
         logger.info(f"📡 Intentando @{user} en: {url}")
         try:
@@ -59,10 +65,16 @@ def fetch_tweets_rss(user, num=5):
                     soup = BeautifulSoup(content, "html.parser")
                     texto_limpio = soup.get_text(strip=True)
                     if not texto_limpio: texto_limpio = entry.get('title', '')
+
+                    # Si el texto es un mensaje de error de la instancia, saltamos
+                    if any(bad in texto_limpio.lower() for bad in palabras_basura):
+                        continue
+
                     img_tag = soup.find('img')
                     url_img = img_tag['src'] if img_tag else None
                     res.append({"texto": texto_limpio, "url": entry.link, "img": url_img, "user": user})
-                return res
+                
+                if res: return res
         except: continue
     return []
 
@@ -98,7 +110,7 @@ async def procesar_noticia(n, context):
         if existe.data: return False
     except: return False
 
-    # 2. IA con GROQ (Prompt optimizado para Universo Football)
+    # 2. IA con GROQ (Prompt Maestro)
     try:
         logger.info(f"🤖 Redactando noticia {tid} con Groq...")
         completion = client_groq.chat.completions.create(
@@ -106,12 +118,12 @@ async def procesar_noticia(n, context):
             messages=[
                 {"role": "system", "content": (
                     "Eres el redactor estrella de 'Universo Football'. "
-                    "Reglas de formato:\n"
+                    "Reglas estrictas de formato:\n"
                     "1. Usa negritas (**) para nombres de EQUIPOS, JUGADORES y COMPETICIONES.\n"
                     "2. Estilo periodístico, directo y emocionante.\n"
                     "3. Usa emojis de banderas y de fútbol.\n"
-                    "4. NO uses hashtags dentro del texto.\n"
-                    "5. Al final añade SIEMPRE: 📲 **Suscríbete en t.me/iUniversoFootball**"
+                    "4. NO uses hashtags (#) dentro del texto.\n"
+                    "5. Al final añade SIEMPRE esta línea exacta: 📲 **Suscríbete en t.me/iUniversoFootball**"
                 )},
                 {"role": "user", "content": f"Redacta esta noticia de @{n['user']}: {n['texto']}"}
             ],
@@ -122,11 +134,11 @@ async def procesar_noticia(n, context):
         logger.info(f"✅ Redacción de Groq lista.")
     except Exception as e:
         logger.error(f"❌ Groq falló: {e}. Usando fallback optimizado.")
-        # Fallback: Limpiamos hashtags del original y pegamos tu enlace
-        texto_original_limpio = n['texto'].replace("#", "")
+        # Fallback: Limpiamos hashtags y pegamos link
+        texto_f = n['texto'].replace("#", "")
         redac = (
             f"📢 **ÚLTIMA HORA** (@{n['user']})\n\n"
-            f"{texto_original_limpio}\n\n"
+            f"{texto_f}\n\n"
             f"📲 **Suscríbete en t.me/iUniversoFootball**"
         )
 
@@ -157,7 +169,6 @@ async def procesar_noticia(n, context):
         
         cap = f"🆔 `{tid}`\n\n{redac}"
         if img_b:
-            # Telegram tiene límite de 1024 caracteres en el caption de fotos
             await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
         else:
             await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
@@ -174,10 +185,10 @@ async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
         totales += len(items)
         for item in items:
             if await procesar_noticia(item, context): encontrados += 1
-            await asyncio.sleep(1)
+            await asyncio.sleep(2) # Delay para evitar bloqueos
 
     if encontrados == 0:
-        texto = f"📭 *Escaneo finalizado*\nRevisados: *{totales} posts.*\nNuevos: *0.*\n\n_Buscando en fuentes alternativas..._"
+        texto = f"📭 *Escaneo finalizado*\nRevisados: *{totales} posts.*\nNuevos: *0.*"
         await context.bot.send_message(ADMIN_ID, texto, parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -196,10 +207,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.MARKDOWN)
             else: 
                 await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.MARKDOWN)
-            
             supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
-        except Exception as e:
-            logger.error(f"❌ Error al publicar en canal: {e}")
+        except: pass
 
     if tid in pendientes: del pendientes[tid]
     await q.edit_message_reply_markup(None)
