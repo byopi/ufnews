@@ -22,8 +22,10 @@ SUPABASE_URL   = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY   = os.environ.get("SUPABASE_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# CONFIGURACIÓN GEMINI (Arreglado el error 404)
+# --- CONFIGURACIÓN GEMINI (FORZANDO RUTA OFICIAL) ---
 genai.configure(api_key=GEMINI_API_KEY)
+
+# Usamos la versión estable del modelo para evitar el error 404 de la v1beta
 gemini_model = genai.GenerativeModel(
     model_name="gemini-1.5-flash",
     generation_config={
