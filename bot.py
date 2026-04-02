@@ -120,22 +120,82 @@ async def cmd_pendientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── Lógica de Procesamiento ──────────────────────────────────────────────────
 async def procesar_noticia(n, context):
+    # Generamos el ID único basado en el texto
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
-    if supabase.table("noticias").select("id").eq("identificador_ia", tid).execute().data:
-        return False
+    
+    # 1. Verificar si ya existe en Supabase
     try:
-        res_ia = gemini_model.generate_content(f"Redacta un post breve para Telegram: {n['texto']}. Fuente: @{n['user']}")
-        redac = res_ia.text.strip()
-        supabase.table("noticias").insert({"identificador_ia": tid, "url_origen": n["url"], "estado": "pendiente", "texto_final": redac}).execute()
+        existe = supabase.table("noticias").select("id").eq("identificador_ia", tid).execute()
+        if existe.data:
+            return False
+    except Exception as e:
+        logger.error(f"❌ Error consultando Supabase: {e}")
+        return False
+
+    # 2. Intentar redacción con Gemini
+    try:
+        logger.info(f"🤖 Enviando a Gemini post de @{n['user']}...")
+        prompt = (
+            f"Actúa como un analista experto de 'Universo Football'. "
+            f"Redacta un post para Telegram basado en esto: {n['texto']}. "
+            f"Fuente: @{n['user']}. Usa emojis futboleros y un tono directo."
+        )
+        res_ia = gemini_model.generate_content(prompt)
         
-        img_b = requests.get(n["img"]).content if n["img"] else None
+        # Validar si Gemini respondió algo
+        if not res_ia or not res_ia.text:
+            logger.error("❌ Gemini devolvió una respuesta vacía.")
+            return False
+            
+        redac = res_ia.text.strip()
+        logger.info(f"✅ Gemini redactó con éxito: {tid}")
+
+    except Exception as e:
+        logger.error(f"❌ Error en la IA (Gemini): {e}")
+        return False
+
+    # 3. Intentar insertar en Supabase
+    try:
+        supabase.table("noticias").insert({
+            "identificador_ia": tid, 
+            "url_origen": n["url"], 
+            "estado": "pendiente", 
+            "texto_final": redac
+        }).execute()
+        logger.info(f"💾 Guardado en Supabase: {tid}")
+    except Exception as e:
+        logger.error(f"❌ Error insertando en Supabase: {e}")
+        # Si falla el guardado, mejor no seguimos para no perder el control
+        return False
+    
+    # 4. Preparar envío al Admin
+    try:
+        img_b = None
+        if n["img"]:
+            try:
+                r_img = requests.get(n["img"], timeout=10)
+                if r_img.status_code == 200:
+                    img_b = r_img.content
+            except:
+                logger.warning(f"⚠️ No se pudo descargar la imagen para {tid}")
+
         pendientes[tid] = {"texto": redac, "foto": img_b}
         
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]])
-        if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=f"🆔 `{tid}`\n\n{redac}", reply_markup=btn)
-        else: await context.bot.send_message(ADMIN_ID, f"🆔 `{tid}`\n\n{redac}", reply_markup=btn)
+        btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), 
+             InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]
+        ])
+        
+        cap = f"🆔 `{tid}`\n\n{redac}"
+        if img_b:
+            await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        else:
+            await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        
         return True
-    except: return False
+    except Exception as e:
+        logger.error(f"❌ Error enviando mensaje al Admin: {e}")
+        return False
 
 # ─── Monitoreo con aviso de "Vacío" ──────────────────────────────────────────
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
