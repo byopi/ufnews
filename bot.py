@@ -113,46 +113,92 @@ async def cmd_pendientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     
-    # 1. Duplicados
+    # 1. Verificar si ya existe en Supabase
     try:
         existe = supabase.table("noticias").select("id").eq("identificador_ia", tid).execute()
-        if existe.data: return False
-    except: return False
-
-    # 2. IA (Redacción con estilo)
-    try:
-        logger.info(f"🤖 Redactando noticia {tid}...")
-        prompt = (
-            f"Eres el redactor estrella de 'Universo Football'. Estilo directo y emocionante. "
-            f"Redacta un post para Telegram: {n['texto']}. Fuente: @{n['user']}. "
-            f"Usa negritas para equipos y jugadores. Termina con un hashtag futbolero."
-        )
-        res_ia = gemini_model.generate_content(prompt)
-        redac = res_ia.text.strip()
+        if existe.data:
+            return False
     except Exception as e:
-        logger.error(f"❌ Error Gemini: {e}")
+        logger.error(f"❌ Error consultando Supabase: {e}")
         return False
 
-    # 3. Guardar e informar al Admin
+    # 2. IA (Llamada DIRECTA por HTTP para evitar el Error 404 de la v1beta)
+    try:
+        logger.info(f"🤖 Redactando noticia {tid} vía API Directa (v1)...")
+        
+        # URL forzada a la versión ESTABLE v1
+        url_api = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        
+        payload = {
+            "contents": [{
+                "parts": [{
+                    "text": (
+                        f"Eres el redactor estrella de 'Universo Football'. Estilo directo y emocionante. "
+                        f"Redacta un post para Telegram basado en esto: {n['texto']}. "
+                        f"Fuente: @{n['user']}. "
+                        f"Reglas: Usa negritas para equipos y jugadores. Termina con un hashtag futbolero. "
+                        f"No incluyas saludos ni introducciones."
+                    )
+                }]
+            }]
+        }
+
+        response = requests.post(url_api, json=payload, timeout=15)
+        res_json = response.json()
+
+        if response.status_code == 200:
+            # Extraer el texto de la estructura de respuesta de Google
+            redac = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
+            logger.info(f"✅ ¡POR FIN! Gemini redactó con éxito: {tid}")
+        else:
+            logger.error(f"❌ Fallo en API Directa: {response.status_code} - {response.text}")
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ Error en el proceso de IA: {e}")
+        return False
+
+    # 3. Intentar insertar en Supabase
     try:
         supabase.table("noticias").insert({
-            "identificador_ia": tid, "url_origen": n["url"], 
-            "estado": "pendiente", "texto_final": redac
+            "identificador_ia": tid, 
+            "url_origen": n["url"], 
+            "estado": "pendiente", 
+            "texto_final": redac
         }).execute()
-
+        logger.info(f"💾 Guardado en Supabase: {tid}")
+    except Exception as e:
+        logger.error(f"❌ Error insertando en Supabase: {e}")
+        return False
+    
+    # 4. Preparar envío al Admin
+    try:
         img_b = None
         if n["img"]:
-            try: img_b = requests.get(n["img"]).content
-            except: pass
+            try:
+                r_img = requests.get(n["img"], timeout=10)
+                if r_img.status_code == 200:
+                    img_b = r_img.content
+            except:
+                logger.warning(f"⚠️ No se pudo descargar la imagen para {tid}")
 
         pendientes[tid] = {"texto": redac, "foto": img_b}
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]])
+        
+        btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), 
+             InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]
+        ])
         
         cap = f"🆔 `{tid}`\n\n{redac}"
-        if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
-        else: await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        if img_b:
+            await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        else:
+            await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        
         return True
-    except: return False
+    except Exception as e:
+        logger.error(f"❌ Error enviando mensaje al Admin: {e}")
+        return False
 
 # ─── Monitoreo ──────────────────────────────────────────────────────────────
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
