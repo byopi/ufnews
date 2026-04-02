@@ -3,7 +3,7 @@ import xml.etree.ElementTree as ET
 from io import BytesIO
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from groq import Groq  # <-- Cambiado
+from groq import Groq
 from supabase import create_client, Client
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -20,9 +20,9 @@ ADMIN_ID       = int(os.environ.get("ADMIN_TELEGRAM_ID", 0))
 CHANNEL_ID     = os.environ.get("TELEGRAM_CHANNEL_ID")
 SUPABASE_URL   = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY   = os.environ.get("SUPABASE_KEY")
-GROQ_API_KEY   = os.environ.get("GROQ_API_KEY") # <-- Nueva variable
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY")
 
-# Configuración de Groq
+# Configuración de Groq y Supabase
 client_groq = Groq(api_key=GROQ_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -98,24 +98,37 @@ async def procesar_noticia(n, context):
         if existe.data: return False
     except: return False
 
-    # 2. IA con GROQ (Llama 3 es una bestia redactando fútbol)
+    # 2. IA con GROQ (Prompt optimizado para Universo Football)
     try:
         logger.info(f"🤖 Redactando noticia {tid} con Groq...")
         completion = client_groq.chat.completions.create(
             model="llama3-8b-8192",
             messages=[
-                {"role": "system", "content": "Eres el redactor estrella de 'Universo Football'. Estilo directo, emocionante y profesional. Usa negritas para equipos y jugadores. Usa emojis futboleros. No saludes."},
-                {"role": "user", "content": f"Redacta un post corto para Telegram basado en esto: {n['texto']}. Fuente: @{n['user']}"}
+                {"role": "system", "content": (
+                    "Eres el redactor estrella de 'Universo Football'. "
+                    "Reglas de formato:\n"
+                    "1. Usa negritas (**) para nombres de EQUIPOS, JUGADORES y COMPETICIONES.\n"
+                    "2. Estilo periodístico, directo y emocionante.\n"
+                    "3. Usa emojis de banderas y de fútbol.\n"
+                    "4. NO uses hashtags dentro del texto.\n"
+                    "5. Al final añade SIEMPRE: 📲 **Suscríbete en t.me/iUniversoFootball**"
+                )},
+                {"role": "user", "content": f"Redacta esta noticia de @{n['user']}: {n['texto']}"}
             ],
-            temperature=0.7,
-            max_tokens=500
+            temperature=0.6,
+            max_tokens=600
         )
         redac = completion.choices[0].message.content.strip()
         logger.info(f"✅ Redacción de Groq lista.")
     except Exception as e:
-        logger.error(f"❌ Groq falló: {e}. Usando fallback.")
-        # Plan de rescate: texto original con estilo
-        redac = f"📢 *ÚLTIMA HORA* (@{n['user']})\n\n{n['texto']}\n\n#UniversoFootball"
+        logger.error(f"❌ Groq falló: {e}. Usando fallback optimizado.")
+        # Fallback: Limpiamos hashtags del original y pegamos tu enlace
+        texto_original_limpio = n['texto'].replace("#", "")
+        redac = (
+            f"📢 **ÚLTIMA HORA** (@{n['user']})\n\n"
+            f"{texto_original_limpio}\n\n"
+            f"📲 **Suscríbete en t.me/iUniversoFootball**"
+        )
 
     # 3. Guardar en Supabase
     try:
@@ -137,10 +150,14 @@ async def procesar_noticia(n, context):
             except: pass
 
         pendientes[tid] = {"texto": redac, "foto": img_b}
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]])
+        btn = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), 
+            InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")
+        ]])
         
         cap = f"🆔 `{tid}`\n\n{redac}"
         if img_b:
+            # Telegram tiene límite de 1024 caracteres en el caption de fotos
             await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap[:1024], parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
         else:
             await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
@@ -160,7 +177,7 @@ async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(1)
 
     if encontrados == 0:
-        texto = f"📭 *Escaneo finalizado*\nRevisados: *{totales} posts.*\nNuevos: *0.*\n\n_Revisando fuentes espejo..._"
+        texto = f"📭 *Escaneo finalizado*\nRevisados: *{totales} posts.*\nNuevos: *0.*\n\n_Buscando en fuentes alternativas..._"
         await context.bot.send_message(ADMIN_ID, texto, parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -174,9 +191,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     act, tid = q.data.split(":")
     if tid in pendientes and act == "p":
         d = pendientes[tid]
-        if d["foto"]: await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"])
-        else: await context.bot.send_message(CHANNEL_ID, d["texto"])
-        supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
+        try:
+            if d["foto"]: 
+                await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.MARKDOWN)
+            else: 
+                await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.MARKDOWN)
+            
+            supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
+        except Exception as e:
+            logger.error(f"❌ Error al publicar en canal: {e}")
+
     if tid in pendientes: del pendientes[tid]
     await q.edit_message_reply_markup(None)
 
