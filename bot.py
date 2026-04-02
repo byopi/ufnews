@@ -39,42 +39,60 @@ def run_http_server():
     port = int(os.environ.get("PORT", 8080))
     HTTPServer(("0.0.0.0", port), RenderKeepAlive).serve_forever()
 
-# ─── Obtención vía RSS (Optimizado) ──────────────────────────────────────────
-# ─── Obtención corregida con más logs ───────────────────────────────────────
-def fetch_tweets_rss(user, num=5):
-    # Intentamos con una URL que suele ser más estable para RSS
-    url = f"https://xcancel.com/{user}/rss"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-    }
-    
-    try:
-        r = requests.get(url, headers=headers, timeout=20)
-        logger.info(f"📡 Status para {user}: {r.status_code}")
-        
-        if r.status_code != 200:
-            return []
+import feedparser
+import random
 
-        # Usar un parser más flexible
-        soup = BeautifulSoup(r.content, "xml")
-        items = soup.find_all("item")
-        
-        res = []
-        for item in items[:num]:
-            texto = item.description.get_text() if item.description else item.title.get_text()
-            # Limpiar HTML del texto
-            texto_limpio = BeautifulSoup(texto, "html.parser").get_text(strip=True)
+def fetch_tweets_rss(user, num=5):
+    # Lista de espejos diferentes. Si uno da 400, el otro lo sacará.
+    instancias = [
+        f"https://nitter.privacydev.net/{user}/rss",
+        f"https://nitter.no-logs.com/{user}/rss",
+        f"https://nitter.perennialte.ch/{user}/rss",
+        f"https://xcancel.com/{user}/rss"
+    ]
+    
+    # Desordenamos para no saturar siempre la misma
+    random.shuffle(instancias)
+    
+    for url in instancias:
+        logger.info(f"📡 Probando @{user} en: {url}")
+        try:
+            # feedparser es más robusto que requests para esto
+            feed = feedparser.parse(url, agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) NewsReader/1.0')
             
-            res.append({
-                "texto": texto_limpio,
-                "url": item.link.get_text() if item.link else "",
-                "img": None, # Por ahora simplificamos para asegurar la subida
-                "user": user
-            })
-        return res
-    except Exception as e:
-        logger.error(f"❌ Fallo total en fetch para {user}: {e}")
-        return []
+            # Verificamos si el feed tiene entradas
+            if len(feed.entries) > 0:
+                res = []
+                for entry in feed.entries[:num]:
+                    content = entry.get('description', entry.get('summary', ''))
+                    soup = BeautifulSoup(content, "html.parser")
+                    
+                    # Limpieza de texto
+                    texto_limpio = soup.get_text(strip=True)
+                    if not texto_limpio: texto_limpio = entry.get('title', '')
+
+                    # Buscar imagen
+                    img_tag = soup.find('img')
+                    url_img = img_tag['src'] if img_tag else None
+
+                    res.append({
+                        "texto": texto_limpio,
+                        "url": entry.link,
+                        "img": url_img,
+                        "user": user
+                    })
+                
+                logger.info(f"✅ ¡LOGRADO! {len(res)} noticias de {user} desde {url}")
+                return res
+            else:
+                logger.warning(f"⚠️ {url} respondió pero el feed está vacío.")
+                
+        except Exception as e:
+            logger.error(f"❌ Falló {url}: {e}")
+            continue
+
+    logger.error(f"💀 Todas las fuentes fallaron para @{user}")
+    return []
         
 # ─── Comandos Solicitados ────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
