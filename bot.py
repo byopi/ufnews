@@ -93,38 +93,33 @@ async def procesar_noticia(n, context):
         if existe.data: return False
     except: return False
 
-    # 2. IA con GROQ (Modelo Actualizado y Formato Visual Pro)
+# 2. IA con GROQ (Prompt Ultra-Corto y Directo)
     try:
         logger.info(f"🤖 Redactando noticia {tid} con Groq...")
         completion = client_groq.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor jefe de 'Universo Football'. Tu misión es transformar noticias en posts de Telegram visualmente atractivos.\n\n"
-                    "ESTRUCTURA OBLIGATORIA DEL POST:\n"
-                    "1. Titular impactante en NEGRITA con emojis relacionados (Ej: ✅🇳🇴 **FICHAJE CONFIRMADO: Stian Molde**).\n"
-                    "2. DOBLE SALTO DE LÍNEA (espacio en blanco).\n"
-                    "3. Cuerpo de la noticia dividido en párrafos CORTOS y SEPARADOS por doble salto de línea.\n"
-                    "4. Cada párrafo del cuerpo DEBE empezar con un emoji de viñeta (Ej: ➡️, ℹ️, ↪️, ◽️, ◼️).\n"
-                    "5. Usa negritas (**) para nombres de EQUIPOS, JUGADORES y COMPETICIONES.\n"
-                    "6. DOBLE SALTO DE LÍNEA antes de la firma.\n"
-                    "7. Firma obligatoria en NEGRITA: 📲 **Suscríbete en t.me/iUniversoFootball**\n\n"
-                    "REGLAS:\n"
-                    "- PARAFRASEA, no copies. Varía los titulares.\n"
-                    "- Limpia los hashtags (#) del texto original.\n"
-                    "- NO digas 'Aquí tienes el post'."
+                    "Eres el redactor de 'Universo Football'. Tu estilo es minimalista, rápido y visual.\n\n"
+                    "ESTRUCTURA OBLIGATORIA:\n"
+                    "1. Titular impactante en NEGRITA con emojis (Ej: 🚨🇮🇹 | **Buffon renuncia a su cargo**).\n"
+                    "2. Un salto de línea.\n"
+                    "3. Cuerpo de la noticia: Máximo 2 o 3 frases, CADA UNA en su propia línea y empezando con un emoji (❌, 😳, ➡️, ✍️).\n"
+                    "4. Un salto de línea.\n"
+                    "5. Firma en NEGRITA: 📲 **Suscríbete en t.me/iUniversoFootball**\n\n"
+                    "REGLAS CRÍTICAS:\n"
+                    "- Sé MUY breve. No expliques de más, ve al grano.\n"
+                    "- Usa negritas (**) para nombres propios y equipos.\n"
+                    "- Solo UN espacio de línea antes de la firma.\n"
+                    "- NUNCA uses hashtags ni introducciones."
                 )},
-                {"role": "user", "content": f"Parafrasea esta noticia de @{n['user']} con párrafos separados y emojis de viñeta: {n['texto']}"}
+                {"role": "user", "content": f"Resume y parafrasea esto de forma ultra corta: {n['texto']}"}
             ],
-            temperature=0.6,
-            max_tokens=800
+            temperature=0.5, # Menor temperatura para que sea menos 'hablador'
+            max_tokens=300
         )
         redac = completion.choices[0].message.content.strip()
-        logger.info(f"✅ Redacción de Groq lista.")
-    except Exception as e:
-        logger.error(f"❌ Groq falló: {e}. Usando fallback.")
-        texto_f = n['texto'].replace("#", "")
-        redac = f"📢 **NOTICIA** (@{n['user']})\n\n{texto_f}\n\n📲 **Suscríbete en t.me/iUniversoFootball**"
+        logger.info(f"✅ Redacción corta de Groq lista.")
 
     # 3. Guardar en Supabase
     try:
