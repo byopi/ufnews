@@ -127,7 +127,7 @@ async def procesar_noticia(n, context):
         logger.info(f"🤖 Redactando noticia {tid} vía API Directa (v1)...")
         
         # URL forzada a la versión ESTABLE v1
-        url_api = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        url_api = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-001:generateContent?key={GEMINI_API_KEY}"
         
         payload = {
             "contents": [{
