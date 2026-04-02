@@ -26,7 +26,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited"]
 pendientes = {}
-esperando_foto = {} # Para el cambio de imagen
+esperando_foto = {}
 
 # ─── Servidor Keep-Alive ─────────────────────────────────────────────────────
 class RenderKeepAlive(BaseHTTPRequestHandler):
@@ -71,20 +71,23 @@ async def procesar_noticia(n, context):
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor jefe de 'Universo Football'. Estilo visual y directo.\n\n"
-                    "FORMATO HTML OBLIGATORIO:\n"
-                    "1. Titular en negrita con etiquetas <b>...</b> (Ej: 🚨👀 | <b>Atlético acuerda con Ederson</b>)\n"
-                    "2. Un salto de línea vacío.\n"
-                    "3. Dos hechos cortos, CADA UNO en su propio párrafo empezando con un emoji. Separa los párrafos con un salto de línea vacío.\n"
-                    "4. Un salto de línea vacío.\n"
-                    "5. Firma en negrita: 📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
+                    "Eres el redactor de 'Universo Football'. Estilo FLASH.\n\n"
+                    "FORMATO HTML ESTRICTO:\n"
+                    "1. Titular en negrita <b>...</b> con emojis.\n"
+                    "2. Salto de línea doble.\n"
+                    "3. Cuerpo: Máximo 2 hechos cortos. Cada uno en su línea con un emoji.\n"
+                    "4. Salto de línea doble.\n"
+                    "5. FUENTE: Si el texto menciona una fuente (ej. Fabrizio, MARCA, @usuario), ponlo así: ℹ️ » Fuente.\n"
+                    "6. Salto de línea SIMPLE.\n"
+                    "7. Firma en negrita: 📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
                     "REGLAS:\n"
-                    "- PARAFRASEA, no copies. Usa etiquetas <b></b> para negritas.\n"
-                    "- NO uses asteriscos. Solo etiquetas HTML."
+                    "- Máximo 2 líneas por párrafo.\n"
+                    "- Usa solo etiquetas <b></b> para negritas.\n"
+                    "- Si no hay fuente clara, omite ese paso."
                 )},
-                {"role": "user", "content": f"Parafrasea esta noticia en HTML con párrafos separados: {n['texto']}"}
+                {"role": "user", "content": f"Parafrasea esta noticia en HTML siguiendo el formato: {n['texto']}"}
             ],
-            temperature=0.4
+            temperature=0.3
         )
         redac = completion.choices[0].message.content.strip()
     except:
@@ -94,8 +97,10 @@ async def procesar_noticia(n, context):
         supabase.table("noticias").insert({"identificador_ia": tid, "url_origen": n["url"], "estado": "pendiente", "texto_final": redac}).execute()
         img_b = None
         if n["img"]:
-            r = requests.get(n["img"], timeout=10)
-            if r.status_code == 200: img_b = r.content
+            try:
+                r = requests.get(n["img"], timeout=10)
+                if r.status_code == 200: img_b = r.content
+            except: pass
 
         pendientes[tid] = {"texto": redac, "foto": img_b}
         btn = InlineKeyboardMarkup([
@@ -108,7 +113,7 @@ async def procesar_noticia(n, context):
         return True
     except: return False
 
-# ─── Handlers de Imagen y Callbacks ──────────────────────────────────────────
+# ─── Handlers ────────────────────────────────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     act, tid = q.data.split(":")
@@ -121,13 +126,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
         del pendientes[tid]
         await q.edit_message_reply_markup(None)
-    
     elif act == "d":
         del pendientes[tid]; await q.delete_message()
-
     elif act == "f":
         esperando_foto[ADMIN_ID] = tid
-        await context.bot.send_message(ADMIN_ID, "📸 Pásame la nueva foto para esta noticia:")
+        await context.bot.send_message(ADMIN_ID, "📸 Pásame la nueva foto:")
 
 async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID or ADMIN_ID not in esperando_foto: return
@@ -136,9 +139,8 @@ async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     f_byte = await foto.download_as_bytearray()
     if tid in pendientes:
         pendientes[tid]["foto"] = bytes(f_byte)
-        await update.message.reply_text(f"✅ Foto actualizada para la noticia <code>{tid}</code>. Ya puedes dar a PUBLICAR.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(f"✅ Foto actualizada para <code>{tid}</code>.", parse_mode=ParseMode.HTML)
 
-# ─── Resto de Comandos ───────────────────────────────────────────────────────
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == ADMIN_ID:
         await update.message.reply_text("🔎 Escaneando..."); context.job_queue.run_once(monitoreo_wrapper, when=0)
@@ -158,5 +160,5 @@ def main():
     app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
     app.run_polling()
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
     main()
