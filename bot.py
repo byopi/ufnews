@@ -110,34 +110,39 @@ async def procesar_noticia(n, context):
         if existe.data: return False
     except: return False
 
-    # 2. IA con GROQ (Prompt Maestro)
+# 2. IA con GROQ (Prompt Maestro para Parafraseo y Formato Universo Football)
     try:
         logger.info(f"🤖 Redactando noticia {tid} con Groq...")
         completion = client_groq.chat.completions.create(
             model="llama3-8b-8192",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor estrella de 'Universo Football'. "
-                    "Reglas estrictas de formato:\n"
-                    "1. Usa negritas (**) para nombres de EQUIPOS, JUGADORES y COMPETICIONES.\n"
-                    "2. Estilo periodístico, directo y emocionante.\n"
-                    "3. Usa emojis de banderas y de fútbol.\n"
-                    "4. NO uses hashtags (#) dentro del texto.\n"
-                    "5. Al final añade SIEMPRE esta línea exacta: 📲 **Suscríbete en t.me/iUniversoFootball**"
+                    "Eres el redactor estrella de 'Universo Football'. Tu trabajo es PARAFRASEAR noticias de X para que parezcan posts profesionales de Telegram.\n\n"
+                    "ESTRUCTURA DEL POST:\n"
+                    "1. Un titular corto con emojis que resuma la noticia (Ej: ✅🇳🇴 **OFICIAL: Ruben Alte es nuevo jugador del Sandefjord**).\n"
+                    "2. Un espacio en blanco.\n"
+                    "3. El cuerpo de la noticia parafraseado con lenguaje fluido y emocionante. Usa negritas (**) para nombres de EQUIPOS y JUGADORES.\n"
+                    "4. Un espacio en blanco.\n"
+                    "5. La firma: 📲 **Suscríbete en t.me/iUniversoFootball**\n\n"
+                    "REGLAS:\n"
+                    "- NO uses siempre 'ÚLTIMA HORA'. Varía según la noticia (OFICIAL, RUMOR, ATENCIÓN, ALERTA, OJO).\n"
+                    "- NO incluyas introducciones como 'Aquí tienes el post'.\n"
+                    "- Limpia los hashtags del texto original."
                 )},
-                {"role": "user", "content": f"Redacta esta noticia de @{n['user']}: {n['texto']}"}
+                {"role": "user", "content": f"Parafrasea esta información de @{n['user']}: {n['texto']}"}
             ],
-            temperature=0.6,
-            max_tokens=600
+            temperature=0.7,
+            max_tokens=800
         )
         redac = completion.choices[0].message.content.strip()
-        logger.info(f"✅ Redacción de Groq lista.")
+        logger.info(f"✅ Redacción de Groq lista con el nuevo formato.")
+    
     except Exception as e:
-        logger.error(f"❌ Groq falló: {e}. Usando fallback optimizado.")
-        # Fallback: Limpiamos hashtags y pegamos link
+        logger.error(f"❌ Groq falló: {e}. Usando fallback limpio.")
+        # Fallback manual por si la IA se cae, para que no pierdas el estilo
         texto_f = n['texto'].replace("#", "")
         redac = (
-            f"📢 **ÚLTIMA HORA** (@{n['user']})\n\n"
+            f"📢 **NOTICIA** (@{n['user']})\n\n"
             f"{texto_f}\n\n"
             f"📲 **Suscríbete en t.me/iUniversoFootball**"
         )
