@@ -93,7 +93,7 @@ async def procesar_noticia(n, context):
         if existe.data: return False
     except: return False
 
-# 2. IA con GROQ (Prompt Maestro: Formato Visual Universo Football)
+    # 2. IA con GROQ (Modelo Actualizado y Formato Visual Pro)
     try:
         logger.info(f"🤖 Redactando noticia {tid} con Groq...")
         completion = client_groq.chat.completions.create(
@@ -106,14 +106,13 @@ async def procesar_noticia(n, context):
                     "2. DOBLE SALTO DE LÍNEA (espacio en blanco).\n"
                     "3. Cuerpo de la noticia dividido en párrafos CORTOS y SEPARADOS por doble salto de línea.\n"
                     "4. Cada párrafo del cuerpo DEBE empezar con un emoji de viñeta (Ej: ➡️, ℹ️, ↪️, ◽️, ◼️).\n"
-                    "5. Usa negritas (**) para nombres de EQUIPOS, JUGADORES y COMPETICIONES dentro del texto.\n"
+                    "5. Usa negritas (**) para nombres de EQUIPOS, JUGADORES y COMPETICIONES.\n"
                     "6. DOBLE SALTO DE LÍNEA antes de la firma.\n"
                     "7. Firma obligatoria en NEGRITA: 📲 **Suscríbete en t.me/iUniversoFootball**\n\n"
-                    "REGLAS DE ESTILO:\n"
-                    "- PARAFRASEA la información, no la copies tal cual.\n"
-                    "- Si es un fichaje oficial, usa banderas del país y el emoji ✅.\n"
-                    "- NO uses siempre 'ÚLTIMA HORA', varía según el contexto.\n"
-                    "- Elimina cualquier hashtag (#) del texto original."
+                    "REGLAS:\n"
+                    "- PARAFRASEA, no copies. Varía los titulares.\n"
+                    "- Limpia los hashtags (#) del texto original.\n"
+                    "- NO digas 'Aquí tienes el post'."
                 )},
                 {"role": "user", "content": f"Parafrasea esta noticia de @{n['user']} con párrafos separados y emojis de viñeta: {n['texto']}"}
             ],
@@ -121,7 +120,11 @@ async def procesar_noticia(n, context):
             max_tokens=800
         )
         redac = completion.choices[0].message.content.strip()
-        logger.info(f"✅ Redacción de Groq lista con el nuevo formato visual.")
+        logger.info(f"✅ Redacción de Groq lista.")
+    except Exception as e:
+        logger.error(f"❌ Groq falló: {e}. Usando fallback.")
+        texto_f = n['texto'].replace("#", "")
+        redac = f"📢 **NOTICIA** (@{n['user']})\n\n{texto_f}\n\n📲 **Suscríbete en t.me/iUniversoFootball**"
 
     # 3. Guardar en Supabase
     try:
@@ -130,7 +133,8 @@ async def procesar_noticia(n, context):
             "estado": "pendiente", "texto_final": redac
         }).execute()
     except Exception as e:
-        logger.error(f"❌ Error Supabase: {e}"); return False
+        logger.error(f"❌ Error Supabase: {e}")
+        return False
     
     # 4. Enviar al Admin
     try:
@@ -149,7 +153,9 @@ async def procesar_noticia(n, context):
         else:
             await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
         return True
-    except: return False
+    except Exception as e:
+        logger.error(f"❌ Error al enviar al Admin: {e}")
+        return False
 
 # ─── Monitoreo ──────────────────────────────────────────────────────────────
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
@@ -161,7 +167,7 @@ async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
             if await procesar_noticia(item, context): encontrados += 1
             await asyncio.sleep(2)
     if encontrados == 0:
-        await context.bot.send_message(ADMIN_ID, "📭 *Escaneo finalizado sin novedades.*", parse_mode=ParseMode.MARKDOWN)
+        logger.info("Escaneo finalizado sin novedades.")
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -177,7 +183,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if d["foto"]: await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.MARKDOWN)
             else: await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.MARKDOWN)
             supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
-        except: pass
+        except Exception as e:
+            logger.error(f"❌ Error al publicar: {e}")
     if tid in pendientes: del pendientes[tid]
     await q.edit_message_reply_markup(None)
 
