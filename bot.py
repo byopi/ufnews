@@ -71,21 +71,24 @@ async def procesar_noticia(n, context):
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor de 'Universo Football'. Estilo flash.\n"
-                    "FORMATO ESTRICTO (USA ** PARA NEGRITAS):\n"
-                    "1. Titular en negrita con emojis (Ej: 🚨🇮🇹 | **Buffon deja la selección**)\n"
-                    "2. Salto de línea.\n"
-                    "3. Dos hechos cortos (2 líneas máximo), cada uno con un emoji.\n"
-                    "4. Salto de línea.\n"
-                    "5. Firma en negrita: 📲 **Suscríbete en t.me/iUniversoFootball**"
+                    "Eres el redactor jefe de 'Universo Football'. Estilo visual y directo.\n\n"
+                    "FORMATO HTML OBLIGATORIO:\n"
+                    "1. Titular en negrita con etiquetas <b>...</b> (Ej: 🚨👀 | <b>Atlético acuerda con Ederson</b>)\n"
+                    "2. Un salto de línea vacío.\n"
+                    "3. Dos hechos cortos, CADA UNO en su propio párrafo empezando con un emoji. Separa los párrafos con un salto de línea vacío.\n"
+                    "4. Un salto de línea vacío.\n"
+                    "5. Firma en negrita: 📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
+                    "REGLAS:\n"
+                    "- PARAFRASEA, no copies. Usa etiquetas <b></b> para negritas.\n"
+                    "- NO uses asteriscos. Solo etiquetas HTML."
                 )},
-                {"role": "user", "content": f"Resume en 2 líneas esta noticia: {n['texto']}"}
+                {"role": "user", "content": f"Parafrasea esta noticia en HTML con párrafos separados: {n['texto']}"}
             ],
             temperature=0.4
         )
         redac = completion.choices[0].message.content.strip()
     except:
-        redac = f"📢 **NOTICIA**\n\n{n['texto']}\n\n📲 **Suscríbete en t.me/iUniversoFootball**"
+        redac = f"📢 <b>NOTICIA</b>\n\n{n['texto']}\n\n📲 <b>Suscríbete en t.me/iUniversoFootball</b>"
 
     try:
         supabase.table("noticias").insert({"identificador_ia": tid, "url_origen": n["url"], "estado": "pendiente", "texto_final": redac}).execute()
@@ -99,9 +102,9 @@ async def procesar_noticia(n, context):
             [InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")],
             [InlineKeyboardButton("🖼 CAMBIAR IMG", callback_data=f"f:{tid}")]
         ])
-        cap = f"🆔 `{tid}`\n\n{redac}"
-        if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
-        else: await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.MARKDOWN, reply_markup=btn)
+        cap = f"🆔 <code>{tid}</code>\n\n{redac}"
+        if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap, parse_mode=ParseMode.HTML, reply_markup=btn)
+        else: await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.HTML, reply_markup=btn)
         return True
     except: return False
 
@@ -113,8 +116,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if act == "p":
         d = pendientes[tid]
-        if d["foto"]: await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.MARKDOWN)
-        else: await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.MARKDOWN)
+        if d["foto"]: await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.HTML)
+        else: await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.HTML)
         supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
         del pendientes[tid]
         await q.edit_message_reply_markup(None)
@@ -133,7 +136,7 @@ async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     f_byte = await foto.download_as_bytearray()
     if tid in pendientes:
         pendientes[tid]["foto"] = bytes(f_byte)
-        await update.message.reply_text(f"✅ Foto actualizada para la noticia `{tid}`. Ya puedes darle a PUBLICAR arriba.")
+        await update.message.reply_text(f"✅ Foto actualizada para la noticia <code>{tid}</code>. Ya puedes dar a PUBLICAR.", parse_mode=ParseMode.HTML)
 
 # ─── Resto de Comandos ───────────────────────────────────────────────────────
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
