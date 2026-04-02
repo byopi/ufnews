@@ -58,7 +58,7 @@ def fetch_tweets_rss(user, num=5):
         except: continue
     return []
 
-# ─── Lógica de Procesamiento (PROMPT CORREGIDO) ────────────────────────────────
+# ─── Lógica de Procesamiento (PROMPT FILTRADO) ────────────────────────────────
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
@@ -70,24 +70,24 @@ async def procesar_noticia(n, context):
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor jefe de 'Universo Football'. Estilo visual impecable.\n\n"
+                    "Eres el redactor jefe de 'Universo Football'. Tu estilo es minimalista y profesional.\n\n"
                     "FORMATO HTML ESTRICTO:\n"
-                    "1. Titular en negrita con emojis AL INICIO (Ej: 🚨🇳🇴 | <b>Ruben Alte se une al Sandefjord</b>)\n"
+                    "1. Titular en negrita con emojis AL INICIO (Ej: 🚨🇪🇸 | <b>Buffon renuncia a su cargo</b>)\n"
                     "2. Doble salto de línea.\n"
-                    "3. Cuerpo: Máximo 2 hechos cortos. Los emojis SIEMPRE VAN AL INICIO de la frase, nunca al final. (Ej: 📝 El jugador firma...).\n"
+                    "3. Cuerpo: Máximo 2 hechos cortos. Los emojis SIEMPRE AL INICIO (Ej: ❌ Deja de ser...).\n"
                     "4. Salto de línea SIMPLE.\n"
-                    "5. FUENTE: Solo si el tweet menciona una fuente (ej. Fabrizio, MARCA, un medio), ponlo así: ℹ️ » Fuente. Si no hay fuente clara, NO PONGAS NADA.\n"
+                    "5. FUENTE (REGLA DE HIERRO): Solo si el texto menciona explícitamente una fuente real (periodista, diario, club), ponlo así: ℹ️ » [Nombre de la fuente].\n"
+                    "   * Si el texto NO menciona fuente, NO ESCRIBAS NADA en este campo. Prohibido decir 'Fuente no especificada'.\n"
                     "6. Salto de línea SIMPLE.\n"
                     "7. Firma en negrita: 📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
                     "REGLAS DE ORO:\n"
                     "- Emojis siempre antes del texto.\n"
-                    "- Máximo 2 líneas por hecho.\n"
-                    "- Usa solo etiquetas <b></b> para negritas.\n"
-                    "- Respeta los espacios solicitados."
+                    "- Máximo 2 líneas por párrafo.\n"
+                    "- Si no hay fuente, pasa directamente a la firma."
                 )},
                 {"role": "user", "content": f"Parafrasea esta noticia en HTML para Telegram: {n['texto']}"}
             ],
-            temperature=0.2
+            temperature=0.1 # Bajamos más la temperatura para evitar rellenos
         )
         redac = completion.choices[0].message.content.strip()
     except:
@@ -130,7 +130,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del pendientes[tid]; await q.delete_message()
     elif act == "f":
         esperando_foto[ADMIN_ID] = tid
-        await context.bot.send_message(ADMIN_ID, "📸 Pásame la nueva foto para esta noticia:")
+        await context.bot.send_message(ADMIN_ID, "📸 Pásame la nueva foto:")
 
 async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID or ADMIN_ID not in esperando_foto: return
@@ -139,11 +139,11 @@ async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     f_byte = await foto.download_as_bytearray()
     if tid in pendientes:
         pendientes[tid]["foto"] = bytes(f_byte)
-        await update.message.reply_text(f"✅ Foto actualizada para <code>{tid}</code>.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(f"✅ Foto actualizada.", parse_mode=ParseMode.HTML)
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("🔎 Escaneando fuentes..."); context.job_queue.run_once(monitoreo_wrapper, when=0)
+        await update.message.reply_text("🔎 Escaneando..."); context.job_queue.run_once(monitoreo_wrapper, when=0)
 
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
     for c in CUENTAS_X:
