@@ -40,35 +40,42 @@ def run_http_server():
     HTTPServer(("0.0.0.0", port), RenderKeepAlive).serve_forever()
 
 # ─── Obtención vía RSS (Optimizado) ──────────────────────────────────────────
+# ─── Obtención corregida con más logs ───────────────────────────────────────
 def fetch_tweets_rss(user, num=5):
+    # Intentamos con una URL que suele ser más estable para RSS
     url = f"https://xcancel.com/{user}/rss"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Accept": "application/rss+xml, application/xml, text/xml, */*"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
     }
+    
     try:
         r = requests.get(url, headers=headers, timeout=20)
-        if r.status_code == 400:
-            r = requests.get(f"{url}?format=atom", headers=headers, timeout=20)
-        if r.status_code != 200: return []
+        logger.info(f"📡 Status para {user}: {r.status_code}")
+        
+        if r.status_code != 200:
+            return []
 
-        root = ET.fromstring(r.content)
+        # Usar un parser más flexible
+        soup = BeautifulSoup(r.content, "xml")
+        items = soup.find_all("item")
+        
         res = []
-        # Lógica para RSS 2.0 e Item
-        items = root.findall('.//item')
-        if items:
-            for item in items[:num]:
-                desc = item.find('description').text if item.find('description') is not None else ""
-                soup = BeautifulSoup(desc, "html.parser")
-                res.append({
-                    "texto": soup.get_text(strip=True),
-                    "url": item.find('link').text,
-                    "img": soup.find('img')['src'] if soup.find('img') else None,
-                    "user": user
-                })
+        for item in items[:num]:
+            texto = item.description.get_text() if item.description else item.title.get_text()
+            # Limpiar HTML del texto
+            texto_limpio = BeautifulSoup(texto, "html.parser").get_text(strip=True)
+            
+            res.append({
+                "texto": texto_limpio,
+                "url": item.link.get_text() if item.link else "",
+                "img": None, # Por ahora simplificamos para asegurar la subida
+                "user": user
+            })
         return res
-    except: return []
-
+    except Exception as e:
+        logger.error(f"❌ Fallo total en fetch para {user}: {e}")
+        return []
+        
 # ─── Comandos Solicitados ────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -112,12 +119,26 @@ async def procesar_noticia(n, context):
         return True
     except: return False
 
+# ─── Monitoreo con aviso de "Vacío" ──────────────────────────────────────────
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("--- Iniciando Monitoreo Universo Football ---")
+    encontrados_nuevos = 0
+    totales_revisados = 0
+
     for c in CUENTAS_X:
         items = fetch_tweets_rss(c)
+        totales_revisados += len(items)
         for item in items:
-            await procesar_noticia(item, context)
+            if await procesar_noticia(item, context):
+                encontrados_nuevos += 1
             await asyncio.sleep(1)
+
+    # Si terminó y no hay nada, avisa al admin para que no te quedes esperando
+    if encontrados_nuevos == 0:
+        await context.bot.send_message(
+            ADMIN_ID, 
+            f"📭 **Escaneo finalizado**\nRevisados: {totales_revisados} posts.\nNuevos para aprobar: 0.\n\n_Si esto sigue en 0, es probable que xcancel esté bloqueando la IP de Render._"
+        )
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
