@@ -73,7 +73,7 @@ async def procesar_noticia(n, context):
                     "Eres el redactor jefe de 'Universo Football'. Tu estilo es minimalista y profesional.\n\n"
                     "FORMATO HTML ESTRICTO:\n"
                     "1. Titular en negrita con emojis AL INICIO (Ej: 🚨🇪🇸 | <b>Buffon renuncia a su cargo</b>)\n"
-                    "2. Doble salto de línea.\n"
+                    "2. Salto de línea SIMPLE.\n"
                     "3. Cuerpo: Máximo 2 hechos cortos. Los emojis SIEMPRE AL INICIO (Ej: ❌ Deja de ser...), Además, que tenga coherencia y que los hechos sean de 2 líneas cada uno (Ej: 👉 El mismo músculo que lo mantuvo fuera durante dos meses esta temporada. 🩺 Las pruebas determinarán si se trata de un desgarro o simplemente de una distensión.), incluyes 1 espacio SIMPLE por cada hecho.\n"
                     "4. Salto de línea SIMPLE.\n"
                     "5. FUENTE (REGLA DE HIERRO): Solo si el texto menciona explícitamente una fuente real (periodista, diario, club), ponlo así: ℹ️ » [Nombre de la fuente].\n"
