@@ -43,7 +43,8 @@ class RenderKeepAlive(BaseHTTPRequestHandler):
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
-    HTTPServer(("0.0.0.0", port), RenderKeepAlive).serve_forever()
+    server = HTTPServer(("0.0.0.0", port), RenderKeepAlive)
+    server.serve_forever()
 
 # ─── Obtención de RSS ────────────────────────────────────────────────────────
 def fetch_tweets_rss(user, num=5):
@@ -214,17 +215,21 @@ async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
             if await procesar_noticia(item, context): await asyncio.sleep(2)
 
 def main():
+    # Iniciar Keep-Alive en hilo separado
     threading.Thread(target=run_http_server, daemon=True).start()
+    
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("estado", cmd_estado))
     app.add_handler(CommandHandler("programados", cmd_programados))
-    app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_input))
     app.add_handler(MessageHandler(filters.PHOTO, recibir_input))
+    
     app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
-    app.run_polling()
+    
+    logger.info("Bot Iniciado...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
