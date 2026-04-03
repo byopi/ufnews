@@ -24,7 +24,7 @@ GROQ_API_KEY   = os.environ.get("GROQ_API_KEY")
 client_groq = Groq(api_key=GROQ_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited"]
+CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited", "laligaa_neews"]
 pendientes = {}
 esperando_foto = {}
 
