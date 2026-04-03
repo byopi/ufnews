@@ -58,7 +58,7 @@ def fetch_tweets_rss(user, num=5):
         except: continue
     return []
 
-# ─── Lógica de Procesamiento (PROMPT FILTRADO) ────────────────────────────────
+# ─── Lógica de Procesamiento ──────────────────────────────────────────────────
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
@@ -70,24 +70,23 @@ async def procesar_noticia(n, context):
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor jefe de 'Universo Football'. Tu estilo es minimalista y profesional.\n\n"
+                    "Eres el redactor jefe de 'Universo Football'. Estilo profesional y visual.\n\n"
                     "FORMATO HTML ESTRICTO:\n"
-                    "1. Titular en negrita con emojis AL INICIO (Ej: 🚨🇪🇸 | <b>Buffon renuncia a su cargo</b>)\n"
-                    "2. Salto de línea SIMPLE.\n"
-                    "3. Cuerpo: Máximo 2 hechos cortos. Los emojis SIEMPRE AL INICIO (Ej: ❌ Deja de ser...), Además, que tenga coherencia y que los hechos sean de 2 líneas cada uno (Ej: 👉 El mismo músculo que lo mantuvo fuera durante dos meses esta temporada. 🩺 Las pruebas determinarán si se trata de un desgarro o simplemente de una distensión.), incluyes 1 espacio SIMPLE por cada hecho.\n"
-                    "4. Salto de línea SIMPLE.\n"
-                    "5. FUENTE (REGLA DE HIERRO): Solo si el texto menciona explícitamente una fuente real (periodista, diario, club), ponlo así: <b>ℹ️ » [Nombre de la fuente]</b>.\n"
-                    "   * Si el texto NO menciona fuente, NO ESCRIBAS NADA en este campo. Prohibido decir 'Fuente no especificada'.\n"
-                    "6. Salto de línea SIMPLE.\n"
-                    "7. Firma en negrita: 📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
-                    "REGLAS DE ORO:\n"
-                    "- Emojis siempre antes del texto.\n"
-                    "- Máximo 2 líneas por párrafo.\n"
-                    "- Si no hay fuente, pasa directamente a la firma."
+                    "1. Titular en negrita con emojis AL INICIO (Ej: 🚨🇪🇸 | <b>Titular de la noticia</b>)\n"
+                    "2. Salto de línea SIMPLE.\n\n"
+                    "3. Cuerpo: Dos hechos descriptivos. Cada hecho debe tener exactamente 2 líneas de texto para que se vea estético. "
+                    "Los emojis SIEMPRE AL INICIO del párrafo (Ej: 📝 Texto largo que rellene dos líneas...).\n"
+                    "4. Entre el primer hecho y el segundo, deja un SALTO DE LÍNEA SIMPLE.\n\n"
+                    "5. FUENTE: Solo si hay una fuente clara, ponla en negrita: <b>ℹ️ » [Nombre]</b>. Si no hay fuente, NO PONGAS NADA.\n"
+                    "6. Firma en negrita: 📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
+                    "REGLAS:\n"
+                    "- Los hechos deben ser coherentes y detallados (no frases cortas de 3 palabras).\n"
+                    "- Usa saltos de línea para separar secciones como el ejemplo del usuario.\n"
+                    "- Prohibido usar asteriscos, solo etiquetas <b></b>."
                 )},
-                {"role": "user", "content": f"Parafrasea esta noticia en HTML para Telegram: {n['texto']}"}
+                {"role": "user", "content": f"Parafrasea esta noticia con hechos de 2 líneas cada uno: {n['texto']}"}
             ],
-            temperature=0.1 # Bajamos más la temperatura para evitar rellenos
+            temperature=0.2
         )
         redac = completion.choices[0].message.content.strip()
     except:
