@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 import feedparser
 
 # ─── Configuración ──────────────────────────────────────────────────────────
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger("universo_football")
 
 TOKEN          = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -25,7 +25,6 @@ GROQ_API_KEY   = os.environ.get("GROQ_API_KEY")
 
 client_groq = Groq(api_key=GROQ_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-# Configuración estricta de Zona Horaria Venezuela (UTC-4)
 VENEZUELA_TZ = pytz.timezone('America/Caracas')
 
 CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited", "laligaa_neews"]
@@ -65,7 +64,7 @@ def fetch_tweets_rss(user, num=5):
         except: continue
     return []
 
-# ─── Lógica de Procesamiento (PROMPT CORREGIDO CON ▫️) ───────────────────────
+# ─── Lógica de Procesamiento ────────────────────────────────────────────────
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
@@ -85,7 +84,10 @@ async def procesar_noticia(n, context):
                     "<b>ℹ️ » [Nombre]</b> (SOLO si hay fuente clara)\n\n"
                     "📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
                     "REGLAS:\n"
-                    "- Usa ÚNICAMENTE el emoji ▫️ para los hechos.\n"
+                    "- Usa ÚNICAMENTE el emoji ▫️ para los hechos. y un espacio simple para cada hecho,
+                    Ej: (Hecho 1
+                        -espacio simple-
+                        Hecho 2)\n"
                     "- Si no hay fuente, no escribas NADA en ese espacio.\n"
                     "- Prohibido usar el espacio invisible de Telegram (\\xa0).\n"
                     "- Mantén la temperatura en 0.1."
@@ -124,16 +126,16 @@ async def enviar_panel_control(tid, context):
 
 # ─── Comandos ───────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("👋 ¡Listo Samuel! <b>Universo Football</b> operando en UTC-4.\n\n/scan - Buscar\n/estado - Status\n/programados - Cola", parse_mode=ParseMode.HTML)
+    if update.effective_user and update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text("👋 <b>¡Hola asere! Este es el bot poster de noticias de Universo Football</b>\n\n/scan - Buscar\n/estado - Status\n/programados - Cola", parse_mode=ParseMode.HTML)
 
 async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
+    if update.effective_user and update.effective_user.id == ADMIN_ID:
         ahora_ccs = datetime.now(VENEZUELA_TZ).strftime("%H:%M:%S")
         await update.message.reply_text(f"✅ <b>Bot Online</b>\n📍 Hora Caracas: {ahora_ccs}\n📦 Pendientes: {len(pendientes)}", parse_mode=ParseMode.HTML)
 
 async def cmd_programados(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
+    if update.effective_user and update.effective_user.id == ADMIN_ID:
         jobs = context.job_queue.jobs()
         if not jobs: return await update.message.reply_text("📭 No hay nada en cola.")
         txt = "📅 <b>Post Programados (Hora CCS):</b>\n\n"
@@ -143,9 +145,12 @@ async def cmd_programados(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 txt += f"• {hora} - ID: {j.name}\n"
         await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
-# ─── Callbacks & Input ─────────────────────────────────────────────────────
+# ─── Callbacks & Input (CON PROTECCIÓN ANTI-CRASH) ──────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    if not q or not q.from_user or q.from_user.id != ADMIN_ID: return
+    
+    await q.answer()
     act, tid = q.data.split(":")
     if tid not in pendientes: return
 
@@ -164,8 +169,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.delete_message()
 
 async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ESTA ES LA MEJORA CLAVE: Si no hay usuario, ignorar para que no crashee
+    if not update.effective_user or update.effective_user.id != ADMIN_ID:
+        return
+
     uid = update.effective_user.id
-    if uid != ADMIN_ID: return
 
     if uid in esperando_hora:
         tid = esperando_hora.pop(uid)
@@ -174,14 +182,12 @@ async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ahora = datetime.now(VENEZUELA_TZ)
             prog = ahora.replace(hour=h, minute=m, second=0, microsecond=0)
             if prog < ahora: prog += timedelta(days=1)
-            # Convertimos la hora de Caracas a UTC para el job_queue
             context.job_queue.run_once(lambda ctx: publicar_ahora(tid, ctx), when=prog.astimezone(pytz.UTC), name=tid)
             await update.message.reply_text(f"✅ Programado para las {update.message.text} (CCS)")
         except: await update.message.reply_text("❌ Formato HH:MM")
 
     elif uid in esperando_edicion:
         tid = esperando_edicion.pop(uid)
-        # Limpieza de espacios al editar
         pendientes[tid]["texto"] = update.message.text_html.replace('\xa0', '').strip()
         await enviar_panel_control(tid, context)
 
@@ -201,12 +207,12 @@ async def publicar_ahora(tid, context):
         else:
             await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.HTML)
         supabase.table("noticias").insert({"identificador_ia": tid, "url_origen": d["url"], "estado": "publicado"}).execute()
-        del pendientes[tid]
+        if tid in pendientes: del pendientes[tid]
     except Exception as e: logger.error(f"Error publicando: {e}")
 
 # ─── Scanner & Main ──────────────────────────────────────────────────────────
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
+    if update.effective_user and update.effective_user.id == ADMIN_ID:
         await update.message.reply_text("🔎 Escaneando fuentes..."); await monitoreo_wrapper(context)
 
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
@@ -215,13 +221,13 @@ async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
             if await procesar_noticia(item, context): await asyncio.sleep(2)
 
 def main():
-    # Iniciar Keep-Alive en hilo separado
     threading.Thread(target=run_http_server, daemon=True).start()
-    
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("estado", cmd_estado)) # Agregado comando estado que faltaba en main
     app.add_handler(CommandHandler("programados", cmd_programados))
+    app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_input))
     app.add_handler(MessageHandler(filters.PHOTO, recibir_input))
@@ -229,6 +235,7 @@ def main():
     app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
     
     logger.info("Bot Iniciado...")
+    # drop_pending_updates evita que el bot se sature con mensajes viejos al arrancar
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
