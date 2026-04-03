@@ -75,7 +75,7 @@ async def procesar_noticia(n, context):
                     "Eres el redactor de 'Universo Football'. Estilo profesional.\n\n"
                     "ESTRUCTURA HTML:\n"
                     "🚨🌍 | <b>Titular</b>\n\n"
-                    "▫️ Hecho 1 (máx 2 líneas).\n"
+                    "▫️ Hecho 1 (máx 2 líneas).\n\n"
                     "▫️ Hecho 2 (máx 2 líneas).\n\n"
                     "<b>ℹ️ » [Nombre de la Fuente]</b>\n\n"
                     "📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
