@@ -63,7 +63,7 @@ def fetch_tweets_rss(user, num=5):
         except: continue
     return []
 
-# ─── Lógica de IA ────────────────────────────────────────────────────────────
+# ─── Lógica de Procesamiento (PROMPT ANTI-PUNTOS INVISIBLES) ─────────────────
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
@@ -74,24 +74,49 @@ async def procesar_noticia(n, context):
         completion = client_groq.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Redactor jefe de Universo Football. HTML estricto. Titular negrita, dos hechos cortos (2 líneas cada uno), fuente (si hay) y firma. Emojis al inicio. Sin espacios invisibles."}
+                {"role": "system", "content": (
+                    "Eres el redactor de 'Universo Football'. Estilo profesional.\n\n"
+                    "ESTRUCTURA HTML:\n"
+                    "🚨🌍 | <b>Titular</b>\n\n"
+                    "📝 Hecho 1 (máx 2 líneas).\n"
+                    "📝 Hecho 2 (máx 2 líneas).\n\n"
+                    "<b>ℹ️ » [Nombre de la Fuente]</b>\n\n"
+                    "📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
+                    "REGLAS:\n"
+                    "- NO uses el carácter invisible ' ' ni espacios vacíos raros.\n"
+                    "- NO escribas la palabra 'Fuente:', solo pon <b>ℹ️ » [Nombre]</b>.\n"
+                    "- Si no hay fuente, salta directamente a la firma.\n"
+                    "- Emojis SIEMPRE al inicio."
+                )},
+                {"role": "user", "content": f"Redacta esta noticia limpia: {n['texto']}"}
             ],
             temperature=0.1
         )
-        redac = completion.choices[0].message.content.strip().replace('\xa0', '')
+        # Limpieza manual post-IA para asegurar que no hay espacios fantasmas
+        redac = completion.choices[0].message.content.strip()
+        redac = redac.replace('\xa0', '').replace('  ', ' ') # Borra el espacio invisible de Telegram
     except:
         redac = f"📢 <b>NOTICIA</b>\n\n{n['texto']}\n\n📲 <b>Suscríbete en t.me/iUniversoFootball</b>"
 
-    img_b = None
-    if n["img"]:
-        try:
-            r = requests.get(n["img"], timeout=10)
-            if r.status_code == 200: img_b = r.content
-        except: pass
+    try:
+        supabase.table("noticias").insert({"identificador_ia": tid, "url_origen": n["url"], "estado": "pendiente", "texto_final": redac}).execute()
+        img_b = None
+        if n["img"]:
+            try:
+                r = requests.get(n["img"], timeout=10)
+                if r.status_code == 200: img_b = r.content
+            except: pass
 
-    pendientes[tid] = {"texto": redac, "foto": img_b, "url": n["url"]}
-    await enviar_panel_control(tid, context)
-    return True
+        pendientes[tid] = {"texto": redac, "foto": img_b}
+        btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("⏰ PROGRAMAR", callback_data=f"s:{tid}")],
+            [InlineKeyboardButton("🖼 IMG", callback_data=f"f:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]
+        ])
+        cap = f"🆔 <code>{tid}</code>\n\n{redac}"
+        if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap, parse_mode=ParseMode.HTML, reply_markup=btn)
+        else: await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.HTML, reply_markup=btn)
+        return True
+    except: return False
 
 async def enviar_panel_control(tid, context):
     d = pendientes[tid]
