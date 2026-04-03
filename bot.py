@@ -60,7 +60,7 @@ def fetch_tweets_rss(user, num=5):
         except: continue
     return []
 
-# ─── Lógica de Procesamiento (PROMPT CORREGIDO SIN HUECOS) ────────────────────
+# ─── Lógica de Procesamiento (PROMPT BALANCEADO) ─────────────────────────────
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
@@ -72,23 +72,22 @@ async def procesar_noticia(n, context):
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor de 'Universo Football'. Estilo compacto y limpio.\n\n"
-                    "ESTRUCTURA OBLIGATORIA (HTML):\n"
-                    "🚨🌍 | <b>Titular en Negrita</b>\n"
-                    "(Salto de línea simple)\n"
-                    "📝 Primer hecho relevante de máximo 2 líneas.\n"
-                    "📝 Segundo hecho relevante de máximo 2 líneas.\n"
-                    "(Salto de línea simple)\n"
-                    "<b>ℹ️ » [Fuente]</b> (Solo si existe)\n"
-                    "(Salto de línea simple)\n"
-                    "📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
+                    "Eres el redactor de 'Universo Football'. Estilo visual limpio y profesional.\n\n"
+                    "FORMATO HTML REQUERIDO:\n"
+                    "1. Emojis + Titular en negrita <b>...</b>\n"
+                    "2. UN ESPACIO EN BLANCO (Salto de línea doble).\n"
+                    "3. Hecho 1 (Emoji al inicio, máx 2 líneas).\n"
+                    "4. Hecho 2 (Emoji al inicio, máx 2 líneas).\n"
+                    "5. UN ESPACIO EN BLANCO (Salto de línea doble).\n"
+                    "6. <b>ℹ️ » [Fuente]</b> (En negrita, solo si existe).\n"
+                    "7. UN ESPACIO EN BLANCO (Salto de línea doble).\n"
+                    "8. 📲 <b>Suscríbete en t.me/iUniversoFootball</b> (En negrita).\n\n"
                     "REGLAS:\n"
-                    "- Emojis SIEMPRE al inicio.\n"
-                    "- NO uses puntos transparentes ni espacios en blanco extra.\n"
-                    "- Si no hay fuente, pasa del segundo hecho directamente a la firma.\n"
-                    "- Temperatura baja para evitar alucinaciones."
+                    "- Los hechos deben estar pegados entre sí.\n"
+                    "- Usa saltos de línea dobles solo para separar el Titular, el Bloque de hechos, la Fuente y la Firma.\n"
+                    "- Temperatura mínima para precisión total."
                 )},
-                {"role": "user", "content": f"Redacta esta noticia siguiendo la estructura: {n['texto']}"}
+                {"role": "user", "content": f"Redacta esta noticia para Telegram respetando los espacios: {n['texto']}"}
             ],
             temperature=0.1
         )
@@ -116,7 +115,7 @@ async def procesar_noticia(n, context):
         return True
     except: return False
 
-# ─── Handlers de Callback y Programación ─────────────────────────────────────
+# ─── Handlers (Publicar / Programar) ──────────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     act, tid = q.data.split(":")
@@ -127,7 +126,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_reply_markup(None)
     elif act == "s":
         esperando_hora[ADMIN_ID] = tid
-        await context.bot.send_message(ADMIN_ID, "⏰ Hora (24h, ej: 15:30):")
+        await context.bot.send_message(ADMIN_ID, "⏰ Hora (24h, ej: 21:00):")
     elif act == "d":
         del pendientes[tid]; await q.delete_message()
     elif act == "f":
@@ -142,16 +141,13 @@ async def publicar_ahora(tid, context):
         else: await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.HTML)
         supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
         del pendientes[tid]
-    except Exception as e:
-        logger.error(f"Error al publicar: {e}")
+    except Exception as e: logger.error(f"Error: {e}")
 
 async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != ADMIN_ID: return
-
     if uid in esperando_hora:
-        tid = esperando_hora.pop(uid)
-        hora_str = update.message.text
+        tid, hora_str = esperando_hora.pop(uid), update.message.text
         try:
             h, m = map(int, hora_str.split(":"))
             ahora = datetime.now()
@@ -160,9 +156,7 @@ async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if delay < 0: delay += 86400
             context.job_queue.run_once(lambda ctx: publicar_ahora(tid, ctx), when=delay)
             await update.message.reply_text(f"✅ Programado para las {hora_str}")
-        except:
-            await update.message.reply_text("❌ Usa HH:MM")
-
+        except: await update.message.reply_text("❌ Formato HH:MM")
     elif uid in esperando_foto:
         tid = esperando_foto.pop(uid)
         if update.message.photo:
