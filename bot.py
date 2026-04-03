@@ -76,7 +76,7 @@ async def procesar_noticia(n, context):
                     "2. Salto de línea SIMPLE.\n"
                     "3. Cuerpo: Máximo 2 hechos cortos. Los emojis SIEMPRE AL INICIO (Ej: ❌ Deja de ser...), Además, que tenga coherencia y que los hechos sean de 2 líneas cada uno (Ej: 👉 El mismo músculo que lo mantuvo fuera durante dos meses esta temporada. 🩺 Las pruebas determinarán si se trata de un desgarro o simplemente de una distensión.), incluyes 1 espacio SIMPLE por cada hecho.\n"
                     "4. Salto de línea SIMPLE.\n"
-                    "5. FUENTE (REGLA DE HIERRO): Solo si el texto menciona explícitamente una fuente real (periodista, diario, club), ponlo así: ℹ️ » [Nombre de la fuente].\n"
+                    "5. FUENTE (REGLA DE HIERRO): Solo si el texto menciona explícitamente una fuente real (periodista, diario, club), ponlo así: <b>ℹ️ » [Nombre de la fuente]</b>.\n"
                     "   * Si el texto NO menciona fuente, NO ESCRIBAS NADA en este campo. Prohibido decir 'Fuente no especificada'.\n"
                     "6. Salto de línea SIMPLE.\n"
                     "7. Firma en negrita: 📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
