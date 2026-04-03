@@ -84,10 +84,7 @@ async def procesar_noticia(n, context):
                     "<b>ℹ️ » [Nombre]</b> (SOLO si hay fuente clara)\n\n"
                     "📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
                     "REGLAS:\n"
-                    "- Usa ÚNICAMENTE el emoji ▫️ para los hechos. y un espacio simple para cada hecho
-                    Ej: (Hecho 1
-                        -espacio simple-
-                        Hecho 2)\n"
+                    "- Usa ÚNICAMENTE el emoji ▫️ para los hechos. y un espacio simple para cada hecho. Ej: (Hecho 1) -espacio simple- Hecho 2). Pasa que no puedo ponerlo en vertical pero lo pillas\n"
                     "- Si no hay fuente, no escribas NADA en ese espacio.\n"
                     "- Prohibido usar el espacio invisible de Telegram (\\xa0).\n"
                     "- Mantén la temperatura en 0.1."
