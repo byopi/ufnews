@@ -1,5 +1,6 @@
-import os, hashlib, requests, logging, threading, asyncio, random
+import os, hashlib, requests, logging, threading, asyncio, random, re
 from io import BytesIO
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from groq import Groq
@@ -27,6 +28,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited", "laligaa_neews"]
 pendientes = {}
 esperando_foto = {}
+esperando_hora = {}
 
 # ─── Servidor Keep-Alive ─────────────────────────────────────────────────────
 class RenderKeepAlive(BaseHTTPRequestHandler):
@@ -58,7 +60,7 @@ def fetch_tweets_rss(user, num=5):
         except: continue
     return []
 
-# ─── Lógica de Procesamiento ──────────────────────────────────────────────────
+# ─── Lógica de Procesamiento (PROMPT ANTI-TESTAMENTOS) ────────────────────────
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
@@ -70,21 +72,19 @@ async def procesar_noticia(n, context):
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor jefe de 'Universo Football'. Estilo profesional y visual.\n\n"
+                    "Eres el redactor jefe de 'Universo Football'. Estilo directo y visual.\n\n"
                     "FORMATO HTML ESTRICTO:\n"
-                    "1. Titular en negrita con emojis AL INICIO (Ej: 🚨🇪🇸 | <b>Titular de la noticia</b>)\n"
-                    "2. Salto de línea SIMPLE.\n\n"
-                    "3. Cuerpo: Dos hechos descriptivos. Cada hecho debe tener exactamente 2 líneas de texto para que se vea estético. "
-                    "Los emojis SIEMPRE AL INICIO del párrafo (Ej: 📝 Texto largo que rellene dos líneas...).\n"
-                    "4. Entre el primer hecho y el segundo, deja un SALTO DE LÍNEA SIMPLE.\n\n"
-                    "5. FUENTE: Solo si hay una fuente clara, ponla en negrita: <b>ℹ️ » [Nombre]</b>. Si no hay fuente, NO PONGAS NADA.\n"
-                    "6. Firma en negrita: 📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
-                    "REGLAS:\n"
-                    "- Los hechos deben ser coherentes y detallados (no frases cortas de 3 palabras).\n"
-                    "- Usa saltos de línea para separar secciones como el ejemplo del usuario.\n"
-                    "- Prohibido usar asteriscos, solo etiquetas <b></b>."
+                    "1. Titular en negrita con emojis AL INICIO (Ej: 🚨🇪🇸 | <b>Noticia impactante</b>)\n"
+                    "2. DOBLE salto de línea.\n"
+                    "3. Cuerpo: Dos hechos descriptivos. Máximo 140 caracteres por hecho. Emojis AL INICIO.\n"
+                    "4. Salto de línea SIMPLE entre hechos.\n"
+                    "5. DOBLE salto de línea antes de la fuente.\n"
+                    "6. FUENTE: Solo si existe, en negrita: <b>ℹ️ » [Fuente]</b>. Si no, nada.\n"
+                    "7. DOBLE salto de línea antes de la firma.\n"
+                    "8. Firma en negrita: 📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
+                    "PROHIBIDO: Escribir párrafos largos. Sé breve pero informativo."
                 )},
-                {"role": "user", "content": f"Parafrasea esta noticia con hechos de 2 líneas cada uno: {n['texto']}"}
+                {"role": "user", "content": f"Parafrasea esto corto (2 líneas máx por punto): {n['texto']}"}
             ],
             temperature=0.2
         )
@@ -103,8 +103,8 @@ async def procesar_noticia(n, context):
 
         pendientes[tid] = {"texto": redac, "foto": img_b}
         btn = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")],
-            [InlineKeyboardButton("🖼 CAMBIAR IMG", callback_data=f"f:{tid}")]
+            [InlineKeyboardButton("✅ PUBLICAR", callback_data=f"p:{tid}"), InlineKeyboardButton("⏰ PROGRAMAR", callback_data=f"s:{tid}")],
+            [InlineKeyboardButton("🖼 CAMBIAR IMG", callback_data=f"f:{tid}"), InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]
         ])
         cap = f"🆔 <code>{tid}</code>\n\n{redac}"
         if img_b: await context.bot.send_photo(ADMIN_ID, BytesIO(img_b), caption=cap, parse_mode=ParseMode.HTML, reply_markup=btn)
@@ -112,34 +112,63 @@ async def procesar_noticia(n, context):
         return True
     except: return False
 
-# ─── Handlers e Interfaz ─────────────────────────────────────────────────────
+# ─── Handlers de Callback y Programación ─────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     act, tid = q.data.split(":")
     if tid not in pendientes: return
 
     if act == "p":
-        d = pendientes[tid]
-        if d["foto"]: await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.HTML)
-        else: await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.HTML)
-        supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
-        del pendientes[tid]
+        await publicar_ahora(tid, context)
         await q.edit_message_reply_markup(None)
+    elif act == "s":
+        esperando_hora[ADMIN_ID] = tid
+        await context.bot.send_message(ADMIN_ID, "⏰ Dime la hora para publicar (Formato 24h, ej: 15:30):")
     elif act == "d":
         del pendientes[tid]; await q.delete_message()
     elif act == "f":
         esperando_foto[ADMIN_ID] = tid
         await context.bot.send_message(ADMIN_ID, "📸 Pásame la nueva foto:")
 
-async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID or ADMIN_ID not in esperando_foto: return
-    tid = esperando_foto.pop(ADMIN_ID)
-    foto = await update.message.photo[-1].get_file()
-    f_byte = await foto.download_as_bytearray()
-    if tid in pendientes:
-        pendientes[tid]["foto"] = bytes(f_byte)
-        await update.message.reply_text(f"✅ Foto actualizada.", parse_mode=ParseMode.HTML)
+async def publicar_ahora(tid, context):
+    d = pendientes.get(tid)
+    if not d: return
+    if d["foto"]: await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.HTML)
+    else: await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.HTML)
+    supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
+    del pendientes[tid]
 
+async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID: return
+
+    # Caso: Recibir Hora para Programar
+    if uid in esperando_hora:
+        tid = esperando_hora.pop(uid)
+        hora_str = update.message.text
+        try:
+            h, m = map(int, hora_str.split(":"))
+            ahora = datetime.now()
+            programado = ahora.replace(hour=h, minute=m, second=0, microsecond=0)
+            delay = (programado - ahora).total_seconds()
+            if delay < 0: delay += 86400 # Si la hora ya pasó, es para mañana
+            
+            context.job_queue.run_once(lambda ctx: publicar_ahora(tid, ctx), when=delay)
+            await update.message.reply_text(f"✅ Noticia <code>{tid}</code> programada para las {hora_str}.", parse_mode=ParseMode.HTML)
+        except:
+            await update.message.reply_text("❌ Formato de hora inválido. Usa HH:MM (ej: 22:15).")
+
+    # Caso: Recibir Foto
+    elif uid in esperando_foto:
+        tid = esperando_foto.pop(uid)
+        if update.message.photo:
+            foto = await update.message.photo[-1].get_file()
+            f_byte = await foto.download_as_bytearray()
+            if tid in pendientes:
+                pendientes[tid]["foto"] = bytes(f_byte)
+                await update.message.reply_text(f"✅ Foto actualizada para <code>{tid}</code>.", parse_mode=ParseMode.HTML)
+
+# ─── Comandos y Main ────────────────────────────────────────────────────────
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == ADMIN_ID:
         await update.message.reply_text("🔎 Escaneando..."); context.job_queue.run_once(monitoreo_wrapper, when=0)
@@ -155,7 +184,8 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.PHOTO, recibir_foto))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_input))
+    app.add_handler(MessageHandler(filters.PHOTO, recibir_input))
     app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
     app.run_polling()
 
