@@ -84,7 +84,7 @@ async def procesar_noticia(n, context):
                     "<b>ℹ️ » [Nombre]</b> (SOLO si hay fuente clara)\n\n"
                     "📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
                     "REGLAS:\n"
-                    "- Usa ÚNICAMENTE el emoji ▫️ para los hechos. y un espacio simple para cada hecho,
+                    "- Usa ÚNICAMENTE el emoji ▫️ para los hechos. y un espacio simple para cada hecho
                     Ej: (Hecho 1
                         -espacio simple-
                         Hecho 2)\n"
