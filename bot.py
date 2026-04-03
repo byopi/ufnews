@@ -60,7 +60,7 @@ def fetch_tweets_rss(user, num=5):
         except: continue
     return []
 
-# ─── Lógica de Procesamiento (PROMPT BALANCEADO) ─────────────────────────────
+# ─── Lógica de Procesamiento (PROMPT ANTI-PUNTOS INVISIBLES) ─────────────────
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
@@ -72,26 +72,26 @@ async def procesar_noticia(n, context):
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": (
-                    "Eres el redactor de 'Universo Football'. Estilo visual limpio y profesional.\n\n"
-                    "FORMATO HTML REQUERIDO:\n"
-                    "1. Emojis + Titular en negrita <b>...</b>\n"
-                    "2. UN ESPACIO EN BLANCO (Salto de línea doble).\n"
-                    "3. Hecho 1 (Emoji al inicio, máx 2 líneas).\n"
-                    "4. Hecho 2 (Emoji al inicio, máx 2 líneas).\n"
-                    "5. UN ESPACIO EN BLANCO (Salto de línea doble).\n"
-                    "6. <b>ℹ️ » [Fuente]</b> (En negrita, solo si existe).\n"
-                    "7. UN ESPACIO EN BLANCO (Salto de línea doble).\n"
-                    "8. 📲 <b>Suscríbete en t.me/iUniversoFootball</b> (En negrita).\n\n"
+                    "Eres el redactor de 'Universo Football'. Estilo profesional.\n\n"
+                    "ESTRUCTURA HTML:\n"
+                    "🚨🌍 | <b>Titular</b>\n\n"
+                    "▫️ Hecho 1 (máx 2 líneas).\n"
+                    "▫️ Hecho 2 (máx 2 líneas).\n\n"
+                    "<b>ℹ️ » [Nombre de la Fuente]</b>\n\n"
+                    "📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
                     "REGLAS:\n"
-                    "- Los hechos deben estar pegados entre sí.\n"
-                    "- Usa saltos de línea dobles solo para separar el Titular, el Bloque de hechos, la Fuente y la Firma.\n"
-                    "- Temperatura mínima para precisión total."
+                    "- NO uses el carácter invisible ' ' ni espacios vacíos raros.\n"
+                    "- NO escribas la palabra 'Fuente:', solo pon <b>ℹ️ » [Nombre]</b>.\n"
+                    "- Si no hay fuente, salta directamente a la firma.\n"
+                    "- Emojis SIEMPRE al inicio."
                 )},
-                {"role": "user", "content": f"Redacta esta noticia para Telegram respetando los espacios: {n['texto']}"}
+                {"role": "user", "content": f"Redacta esta noticia limpia: {n['texto']}"}
             ],
             temperature=0.1
         )
+        # Limpieza manual post-IA para asegurar que no hay espacios fantasmas
         redac = completion.choices[0].message.content.strip()
+        redac = redac.replace('\xa0', '').replace('  ', ' ') # Borra el espacio invisible de Telegram
     except:
         redac = f"📢 <b>NOTICIA</b>\n\n{n['texto']}\n\n📲 <b>Suscríbete en t.me/iUniversoFootball</b>"
 
@@ -126,7 +126,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_reply_markup(None)
     elif act == "s":
         esperando_hora[ADMIN_ID] = tid
-        await context.bot.send_message(ADMIN_ID, "⏰ Hora (24h, ej: 21:00):")
+        await context.bot.send_message(ADMIN_ID, "⏰ Hora (Formato 24h, ej: 18:45):")
     elif act == "d":
         del pendientes[tid]; await q.delete_message()
     elif act == "f":
