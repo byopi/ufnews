@@ -68,19 +68,26 @@ def fetch_tweets_rss(user, num=5):
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
-        # BLOQUEO: Verificar si ya existe en Supabase
-        check = supabase.table("noticias").select("id").eq("identificador_ia", tid).execute()
-        if check.data: 
+        # BLOQUEO DEFINITIVO: Usamos upsert para registrar o actualizar el estado
+        # Si ya existe como 'publicado', 'en_revision' o cualquier estado, Supabase simplemente 
+        # lo procesará y nosotros verificaremos después si debemos mandarlo al bot.
+        
+        # Primero verificamos si ya existe y qué estado tiene
+        check = supabase.table("noticias").select("estado").eq("identificador_ia", tid).execute()
+        
+        if check.data:
+            # Si ya existe en cualquier estado (publicado o en revisión), LO IGNORAMOS
             return False
             
-        # REGISTRO PREVENTIVO: Lo guardamos antes de procesar para evitar duplicados en el próximo scan
-        supabase.table("noticias").insert({
+        # Si llegamos aquí es que es nuevo, así que lo registramos de inmediato
+        supabase.table("noticias").upsert({
             "identificador_ia": tid, 
             "url_origen": n["url"], 
             "estado": "en_revision"
         }).execute()
+        
     except Exception as e:
-        logger.error(f"Error checking Supabase: {e}")
+        logger.error(f"Error Supabase Upsert: {e}")
         return False
 
     try:
