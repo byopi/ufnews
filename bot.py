@@ -67,29 +67,19 @@ def fetch_tweets_rss(user, num=5):
 # ─── Lógica de Procesamiento ────────────────────────────────────────────────
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
+    
     try:
-        # BLOQUEO DEFINITIVO: Usamos upsert para registrar o actualizar el estado
-        # Si ya existe como 'publicado', 'en_revision' o cualquier estado, Supabase simplemente 
-        # lo procesará y nosotros verificaremos después si debemos mandarlo al bot.
-        
-        # Primero verificamos si ya existe y qué estado tiene
-        check = supabase.table("noticias").select("estado").eq("identificador_ia", tid).execute()
-        
-        if check.data:
-            # Si ya existe en cualquier estado (publicado o en revisión), LO IGNORAMOS
+        # 1. SOLO CONSULTAR: ¿Ya existe?
+        res = supabase.table("noticias").select("estado").eq("identificador_ia", tid).execute()
+        if res.data and len(res.data) > 0:
+            # Si ya existe, no hacemos nada y saltamos a la siguiente
             return False
             
-        # Si llegamos aquí es que es nuevo, así que lo registramos de inmediato
-        supabase.table("noticias").upsert({
-            "identificador_ia": tid, 
-            "url_origen": n["url"], 
-            "estado": "en_revision"
-        }).execute()
-        
     except Exception as e:
-        logger.error(f"Error Supabase Upsert: {e}")
+        logger.error(f"Error consultando Supabase: {e}")
         return False
 
+    # 2. PROCESAR CON LA IA (Si falla aquí, la noticia NO se registra en DB y se reintentará en 15min)
     try:
         completion = client_groq.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -113,9 +103,11 @@ async def procesar_noticia(n, context):
             temperature=0.1
         )
         redac = completion.choices[0].message.content.strip().replace('\xa0', '').replace('  ', ' ')
-    except:
-        redac = f"📢 <b>NOTICIA</b>\n\n{n['texto']}\n\n📲 <b>Suscríbete en t.me/iUniversoFootball</b>"
+    except Exception as e:
+        logger.error(f"Error Groq: {e}")
+        return False # No registramos nada para poder reintentar luego
 
+    # 3. PREPARAR IMAGEN
     img_b = None
     if n["img"]:
         try:
@@ -123,9 +115,23 @@ async def procesar_noticia(n, context):
             if r.status_code == 200: img_b = r.content
         except: pass
 
-    pendientes[tid] = {"texto": redac, "foto": img_b, "url": n["url"]}
-    await enviar_panel_control(tid, context)
-    return True
+    # 4. REGISTRO FINAL: Solo si llegamos aquí, marcamos como "en_revision" en la DB
+    try:
+        supabase.table("noticias").insert({
+            "identificador_ia": tid, 
+            "url_origen": n["url"], 
+            "estado": "en_revision"
+        }).execute()
+        
+        # Guardamos en memoria y enviamos al admin
+        pendientes[tid] = {"texto": redac, "foto": img_b, "url": n["url"]}
+        await enviar_panel_control(tid, context)
+        logger.info(f"✅ Noticia enviada al panel: {tid}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error al registrar éxito en Supabase: {e}")
+        return False
 
 async def enviar_panel_control(tid, context):
     d = pendientes[tid]
