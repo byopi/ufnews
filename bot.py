@@ -68,8 +68,20 @@ def fetch_tweets_rss(user, num=5):
 async def procesar_noticia(n, context):
     tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
     try:
-        if supabase.table("noticias").select("id").eq("identificador_ia", tid).execute().data: return False
-    except: return False
+        # BLOQUEO: Verificar si ya existe en Supabase
+        check = supabase.table("noticias").select("id").eq("identificador_ia", tid).execute()
+        if check.data: 
+            return False
+            
+        # REGISTRO PREVENTIVO: Lo guardamos antes de procesar para evitar duplicados en el próximo scan
+        supabase.table("noticias").insert({
+            "identificador_ia": tid, 
+            "url_origen": n["url"], 
+            "estado": "en_revision"
+        }).execute()
+    except Exception as e:
+        logger.error(f"Error checking Supabase: {e}")
+        return False
 
     try:
         completion = client_groq.chat.completions.create(
@@ -124,7 +136,7 @@ async def enviar_panel_control(tid, context):
 # ─── Comandos ───────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user and update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("👋 <b>¡Hola asere! Este es el bot poster de noticias de Universo Football</b>\n\n/scan - Buscar\n/estado - Status\n/programados - Cola", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("👋 <b>¡Hola Asere! Este es el bot poster de noticias de Universo Football</b>\n\n/scan - Buscar\n/estado - Status\n/programados - Cola", parse_mode=ParseMode.HTML)
 
 async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user and update.effective_user.id == ADMIN_ID:
@@ -142,7 +154,7 @@ async def cmd_programados(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 txt += f"• {hora} - ID: {j.name}\n"
         await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
-# ─── Callbacks & Input (CON PROTECCIÓN ANTI-CRASH) ──────────────────────────
+# ─── Callbacks & Input ─────────────────────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.from_user or q.from_user.id != ADMIN_ID: return
@@ -162,11 +174,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         esperando_foto[ADMIN_ID] = tid
         await context.bot.send_message(ADMIN_ID, "📸 Pásame la nueva foto:")
     elif act == "d":
+        # Si borramos, mantenemos el ID en Supabase para que no vuelva a aparecer en el escaneo
         if tid in pendientes: del pendientes[tid]
         await q.delete_message()
 
 async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ESTA ES LA MEJORA CLAVE: Si no hay usuario, ignorar para que no crashee
     if not update.effective_user or update.effective_user.id != ADMIN_ID:
         return
 
@@ -203,7 +215,10 @@ async def publicar_ahora(tid, context):
             await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.HTML)
         else:
             await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.HTML)
-        supabase.table("noticias").insert({"identificador_ia": tid, "url_origen": d["url"], "estado": "publicado"}).execute()
+        
+        # ACTUALIZACIÓN: Cambiamos estado de 'en_revision' a 'publicado'
+        supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
+        
         if tid in pendientes: del pendientes[tid]
     except Exception as e: logger.error(f"Error publicando: {e}")
 
@@ -222,7 +237,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("estado", cmd_estado)) # Agregado comando estado que faltaba en main
+    app.add_handler(CommandHandler("estado", cmd_estado)) 
     app.add_handler(CommandHandler("programados", cmd_programados))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CallbackQueryHandler(handle_callback))
@@ -232,7 +247,6 @@ def main():
     app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
     
     logger.info("Bot Iniciado...")
-    # drop_pending_updates evita que el bot se sature con mensajes viejos al arrancar
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
