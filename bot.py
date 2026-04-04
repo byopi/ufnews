@@ -33,7 +33,7 @@ esperando_foto = {}
 esperando_hora = {}
 esperando_edicion = {}
 
-# ─── Servidor Keep-Alive ─────────────────────────────────────────────────────
+# ─── Servidor Keep-Alive (Para Render/UptimeRobot) ──────────────────────────
 class RenderKeepAlive(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers()
@@ -66,20 +66,21 @@ def fetch_tweets_rss(user, num=5):
 
 # ─── Lógica de Procesamiento ────────────────────────────────────────────────
 async def procesar_noticia(n, context):
-    tid = hashlib.md5(n["texto"].encode()).hexdigest()[:12]
+    # Hash robusto: Texto + URL para evitar colisiones en noticias similares
+    semilla = f"{n['texto']}{n['url']}".encode()
+    tid = hashlib.md5(semilla).hexdigest()[:12]
     
     try:
-        # 1. SOLO CONSULTAR: ¿Ya existe?
+        # 1. ¿Ya existe en Supabase?
         res = supabase.table("noticias").select("estado").eq("identificador_ia", tid).execute()
         if res.data and len(res.data) > 0:
-            # Si ya existe, no hacemos nada y saltamos a la siguiente
             return False
             
     except Exception as e:
         logger.error(f"Error consultando Supabase: {e}")
         return False
 
-    # 2. PROCESAR CON LA IA (Si falla aquí, la noticia NO se registra en DB y se reintentará en 15min)
+    # 2. PROCESAR CON LA IA
     try:
         completion = client_groq.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -93,8 +94,7 @@ async def procesar_noticia(n, context):
                     "<b>ℹ️ » [Nombre]</b> (SOLO si hay fuente clara)\n\n"
                     "📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
                     "REGLAS:\n"
-                    "- Usa ÚNICAMENTE el emoji ▫️ para los hechos. y un espacio simple para cada hecho. Ej: (Hecho 1) -espacio simple- Hecho 2). Pasa que no puedo ponerlo en vertical pero lo pillas\n"
-                    "- Si no hay fuente, no escribas NADA en ese espacio.\n"
+                    "- Usa ÚNICAMENTE el emoji ▫️ para los hechos.\n"
                     "- Prohibido usar el espacio invisible de Telegram (\\xa0).\n"
                     "- Mantén la temperatura en 0.1."
                 )},
@@ -105,7 +105,7 @@ async def procesar_noticia(n, context):
         redac = completion.choices[0].message.content.strip().replace('\xa0', '').replace('  ', ' ')
     except Exception as e:
         logger.error(f"Error Groq: {e}")
-        return False # No registramos nada para poder reintentar luego
+        return False 
 
     # 3. PREPARAR IMAGEN
     img_b = None
@@ -115,7 +115,7 @@ async def procesar_noticia(n, context):
             if r.status_code == 200: img_b = r.content
         except: pass
 
-    # 4. REGISTRO FINAL: Solo si llegamos aquí, marcamos como "en_revision" en la DB
+    # 4. REGISTRO FINAL Y ENVÍO
     try:
         supabase.table("noticias").insert({
             "identificador_ia": tid, 
@@ -123,7 +123,6 @@ async def procesar_noticia(n, context):
             "estado": "en_revision"
         }).execute()
         
-        # Guardamos en memoria y enviamos al admin
         pendientes[tid] = {"texto": redac, "foto": img_b, "url": n["url"]}
         await enviar_panel_control(tid, context)
         logger.info(f"✅ Noticia enviada al panel: {tid}")
@@ -149,29 +148,22 @@ async def enviar_panel_control(tid, context):
 # ─── Comandos ───────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user and update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("👋 <b>¡Hola Asere! Este es el bot poster de noticias de Universo Football</b>\n\n/scan - Buscar\n/estado - Status\n/programados - Cola", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("👋 <b>Universo Football Bot</b>\n\n/scan - Forzar búsqueda\n/estado - Info bot", parse_mode=ParseMode.HTML)
 
 async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user and update.effective_user.id == ADMIN_ID:
         ahora_ccs = datetime.now(VENEZUELA_TZ).strftime("%H:%M:%S")
-        await update.message.reply_text(f"✅ <b>Bot Online</b>\n📍 Hora Caracas: {ahora_ccs}\n📦 Pendientes: {len(pendientes)}", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(f"✅ <b>Online</b>\n📍 Hora CCS: {ahora_ccs}\n📦 Pendientes: {len(pendientes)}", parse_mode=ParseMode.HTML)
 
-async def cmd_programados(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user and update.effective_user.id == ADMIN_ID:
-        jobs = context.job_queue.jobs()
-        if not jobs: return await update.message.reply_text("📭 No hay nada en cola.")
-        txt = "📅 <b>Post Programados (Hora CCS):</b>\n\n"
-        for j in jobs:
-            if j.name and j.next_t:
-                hora = j.next_t.astimezone(VENEZUELA_TZ).strftime("%H:%M")
-                txt += f"• {hora} - ID: {j.name}\n"
-        await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
+        await update.message.reply_text("🔎 Escaneando fuentes...")
+        await monitoreo_wrapper(context)
 
 # ─── Callbacks & Input ─────────────────────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.from_user or q.from_user.id != ADMIN_ID: return
-    
     await q.answer()
     act, tid = q.data.split(":")
     if tid not in pendientes: return
@@ -182,19 +174,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(ADMIN_ID, "⏰ Hora Caracas (24h, ej: 15:30):")
     elif act == "e":
         esperando_edicion[ADMIN_ID] = tid
-        await context.bot.send_message(ADMIN_ID, "📝 Pásame el nuevo texto (HTML activo):")
+        await context.bot.send_message(ADMIN_ID, "📝 Envía el nuevo texto:")
     elif act == "f":
         esperando_foto[ADMIN_ID] = tid
-        await context.bot.send_message(ADMIN_ID, "📸 Pásame la nueva foto:")
+        await context.bot.send_message(ADMIN_ID, "📸 Envía la nueva foto:")
     elif act == "d":
-        # Si borramos, mantenemos el ID en Supabase para que no vuelva a aparecer en el escaneo
         if tid in pendientes: del pendientes[tid]
         await q.delete_message()
 
 async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or update.effective_user.id != ADMIN_ID:
-        return
-
+    if not update.effective_user or update.effective_user.id != ADMIN_ID: return
     uid = update.effective_user.id
 
     if uid in esperando_hora:
@@ -206,7 +195,7 @@ async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if prog < ahora: prog += timedelta(days=1)
             context.job_queue.run_once(lambda ctx: publicar_ahora(tid, ctx), when=prog.astimezone(pytz.UTC), name=tid)
             await update.message.reply_text(f"✅ Programado para las {update.message.text} (CCS)")
-        except: await update.message.reply_text("❌ Formato HH:MM")
+        except: await update.message.reply_text("❌ Formato inválido. Usa HH:MM")
 
     elif uid in esperando_edicion:
         tid = esperando_edicion.pop(uid)
@@ -229,34 +218,34 @@ async def publicar_ahora(tid, context):
         else:
             await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.HTML)
         
-        # ACTUALIZACIÓN: Cambiamos estado de 'en_revision' a 'publicado'
         supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
-        
         if tid in pendientes: del pendientes[tid]
     except Exception as e: logger.error(f"Error publicando: {e}")
 
-# ─── Scanner & Main ──────────────────────────────────────────────────────────
-async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user and update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("🔎 Escaneando fuentes..."); await monitoreo_wrapper(context)
-
+# ─── Ciclo de Monitoreo ─────────────────────────────────────────────────────
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("🚀 Iniciando escaneo de noticias...")
+    encontradas = 0
     for c in CUENTAS_X:
-        for item in fetch_tweets_rss(c):
-            if await procesar_noticia(item, context): await asyncio.sleep(2)
+        for item in fetch_tweets_rss(c, num=5):
+            if await procesar_noticia(item, context):
+                encontradas += 1
+                await asyncio.sleep(2)
+    logger.info(f"🏁 Escaneo finalizado. Enviadas al panel: {encontradas}")
 
+# ─── Main ───────────────────────────────────────────────────────────────────
 def main():
     threading.Thread(target=run_http_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("estado", cmd_estado)) 
-    app.add_handler(CommandHandler("programados", cmd_programados))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_input))
     app.add_handler(MessageHandler(filters.PHOTO, recibir_input))
     
+    # Escaneo automático cada 15 minutos
     app.job_queue.run_repeating(monitoreo_wrapper, interval=900, first=10)
     
     logger.info("Bot Iniciado...")
