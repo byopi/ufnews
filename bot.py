@@ -225,11 +225,10 @@ def format_matches_message(all_matches: dict) -> str:
         league_header += "</b>"
         lines.append("")
         lines.append(league_header)
-        lines.append("")
         for time_str in list(groups.keys()):
             for match in groups[time_str]:
                 lines.append(f"{match['home']} - {match['away']} {time_str}")
-        lines.append("")
+    lines.append("")
     lines.append(footer)
     return "\n".join(lines)
 
