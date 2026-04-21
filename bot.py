@@ -312,7 +312,7 @@ async def procesar_noticia(n, context):
                 {"role": "system", "content": (
                     "Eres el redactor de 'Universo Football'.\n\n"
                     "ESTRUCTURA HTML:\n"
-                    "🚨🌍 | <b>Titular</b>\n\n"
+                    "🚨🌍 (el emoji ese de planeta tierra no es obligatorio, lo puedes cambiar por alguno relacionado con el club o país) | <b>Titular</b>\n\n"
                     "▫️ Hecho 1 (máx 2 líneas).\n"
                     "▫️ Hecho 2 (máx 2 líneas).\n\n"
                     "<b>ℹ️ » [Nombre]</b> (SOLO si hay fuente clara)\n\n"
