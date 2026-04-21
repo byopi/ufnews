@@ -375,7 +375,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• /estado — Estado del bot\n"
             "• /scan — Forzar búsqueda de noticias\n"
             "• /test — Enviar partidos de hoy al canal\n"
-            "• /testfecha YYYY-MM-DD — Probar partidos de una fecha\n\n"
+            "• /testfecha YYYY-MM-DD — Probar partidos de una fecha\n"
+            "• /clear — Eliminar todos los posts pendientes\n\n"
             "<i>⚽️ Suscríbete en t.me/iUniversoFootball</i>",
             parse_mode=ParseMode.HTML
         )
@@ -462,13 +463,21 @@ async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid in esperando_hora:
         tid = esperando_hora.pop(uid)
         try:
-            h, m = map(int, update.message.text.split(":"))
+            h, m = map(int, update.message.text.strip().split(":"))
             ahora = datetime.now(VENEZUELA_TZ)
             prog = ahora.replace(hour=h, minute=m, second=0, microsecond=0)
-            if prog < ahora: prog += timedelta(days=1)
-            context.job_queue.run_once(lambda ctx: publicar_ahora(tid, ctx), when=prog.astimezone(pytz.UTC), name=tid)
-            await update.message.reply_text(f"✅ Programado para las {update.message.text} (CCS)")
-        except:
+            if prog <= ahora: prog += timedelta(days=1)
+
+            async def job_publicar(ctx: ContextTypes.DEFAULT_TYPE):
+                await publicar_ahora(tid, ctx)
+
+            context.job_queue.run_once(job_publicar, when=prog.astimezone(pytz.UTC), name=tid)
+            await update.message.reply_text(
+                f"⏰ Programado para las <b>{update.message.text.strip()}</b> (hora Caracas)",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Error programando: {e}")
             await update.message.reply_text("❌ Formato inválido. Usa HH:MM")
     elif uid in esperando_edicion:
         tid = esperando_edicion.pop(uid)
@@ -483,16 +492,43 @@ async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def publicar_ahora(tid, context):
     d = pendientes.get(tid)
-    if not d: return
+    if not d:
+        logger.warning(f"publicar_ahora: tid {tid} no en pendientes")
+        return
     try:
         if d["foto"]:
-            await context.bot.send_photo(CHANNEL_ID, BytesIO(d["foto"]), caption=d["texto"], parse_mode=ParseMode.HTML)
+            await context.bot.send_photo(
+                CHANNEL_ID, BytesIO(d["foto"]),
+                caption=d["texto"], parse_mode=ParseMode.HTML
+            )
         else:
-            await context.bot.send_message(CHANNEL_ID, d["texto"], parse_mode=ParseMode.HTML)
+            await context.bot.send_message(
+                CHANNEL_ID, d["texto"], parse_mode=ParseMode.HTML
+            )
         supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
-        if tid in pendientes: del pendientes[tid]
+        del pendientes[tid]
+        await context.bot.send_message(
+            ADMIN_ID, f"✅ Publicado: <code>{tid}</code>", parse_mode=ParseMode.HTML
+        )
+        logger.info(f"Publicado: {tid}")
     except Exception as e:
-        logger.error(f"Error publicando: {e}")
+        logger.error(f"Error publicando {tid}: {e}")
+        await context.bot.send_message(
+            ADMIN_ID, f"❌ Error al publicar <code>{tid}</code>:\n<code>{e}</code>",
+            parse_mode=ParseMode.HTML
+        )
+
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or update.effective_user.id != ADMIN_ID: return
+    cantidad = len(pendientes)
+    if cantidad == 0:
+        await update.message.reply_text("📭 No hay posts pendientes.")
+        return
+    pendientes.clear()
+    await update.message.reply_text(
+        f"🗑 Se eliminaron <b>{cantidad}</b> post(s) pendiente(s).",
+        parse_mode=ParseMode.HTML
+    )
 
 # ─── Ciclo de Monitoreo ─────────────────────────────────────────────────────
 async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
@@ -534,6 +570,7 @@ def main():
     app.add_handler(CommandHandler("scan",       cmd_scan))
     app.add_handler(CommandHandler("test",       cmd_test))
     app.add_handler(CommandHandler("testfecha",  cmd_testfecha))
+    app.add_handler(CommandHandler("clear",      cmd_clear))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_input))
     app.add_handler(MessageHandler(filters.PHOTO, recibir_input))
