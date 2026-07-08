@@ -71,6 +71,22 @@ def obtener_destino(cuenta: str) -> dict:
         "canal_texto": "t.me/iUniversoFootball",
     })
 
+# Diagnóstico al arrancar: para que sea evidente en los logs de Render si el
+# invitado quedó bien configurado o si falta algo.
+if SUB_USUARIOS:
+    for cuenta, info in SUB_USUARIOS.items():
+        logger.info(
+            f"👥 Invitado activo -> cuenta X: '{cuenta}' | telegram_id: {info['user_id']} | "
+            f"canal: {info['channel_id']} | texto: {info['canal_texto']}"
+        )
+else:
+    faltantes = []
+    if not FRIEND_ID: faltantes.append("FRIEND_TELEGRAM_ID")
+    if not FRIEND_CHANNEL_ID: faltantes.append("FRIEND_CHANNEL_ID")
+    if not FRIEND_CUENTA_X: faltantes.append("FRIEND_CUENTA_X")
+    if faltantes:
+        logger.warning(f"⚠️ Invitado NO activo. Faltan variables de entorno: {', '.join(faltantes)}")
+
 pendientes    = {}
 esperando_foto = {}
 esperando_hora = {}
@@ -402,10 +418,26 @@ async def enviar_panel_control(tid, context):
     ])
     cap = f"🆔 <code>{tid}</code>\n\n{d['texto']}"
     destinatario = d.get("owner_id", ADMIN_ID)
-    if d["foto"]:
-        await context.bot.send_photo(destinatario, BytesIO(d["foto"]), caption=cap, parse_mode=ParseMode.HTML, reply_markup=btn)
-    else:
-        await context.bot.send_message(destinatario, cap, parse_mode=ParseMode.HTML, reply_markup=btn)
+    try:
+        if d["foto"]:
+            await context.bot.send_photo(destinatario, BytesIO(d["foto"]), caption=cap, parse_mode=ParseMode.HTML, reply_markup=btn)
+        else:
+            await context.bot.send_message(destinatario, cap, parse_mode=ParseMode.HTML, reply_markup=btn)
+    except Exception as e:
+        logger.error(f"❌ No se pudo enviar el panel a {destinatario} (tid {tid}): {e}")
+        # Si falla el envío a un invitado (ej: nunca le dio /start al bot), avisa al admin
+        # en vez de perder la noticia en silencio.
+        if destinatario != ADMIN_ID:
+            try:
+                await context.bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ No pude enviarle el panel a tu invitado (<code>{destinatario}</code>) para "
+                    f"<code>{tid}</code>.\nProbablemente no le ha dado <b>/start</b> al bot todavía.\n"
+                    f"Error: <code>{e}</code>",
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
 
 # ─── Comandos ───────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
