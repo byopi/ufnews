@@ -34,6 +34,33 @@ VENEZUELA_TZ = pytz.timezone('America/Caracas')
 
 CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited", "laligaa_neews"]
 
+# ─── Sub-usuarios (invitados) ───────────────────────────────────────────────
+# Permite ceder UNA cuenta de X de CUENTAS_X a otra persona (con su propio
+# Telegram ID y su propio canal). Las noticias detectadas en esa cuenta se le
+# envían solo a ella y solo puede publicar/editar/programar/borrar SUS propias
+# noticias pendientes; nunca ve ni toca las del admin principal.
+#
+# Variables de entorno necesarias para activar un invitado:
+#   FRIEND_TELEGRAM_ID -> ID numérico de Telegram del invitado (@userinfobot)
+#   FRIEND_CHANNEL_ID  -> Canal/chat destino del invitado (ej: @canal_amigo)
+#   FRIEND_CUENTA_X    -> Nombre exacto de la cuenta en CUENTAS_X que le pertenece
+FRIEND_ID         = int(os.environ.get("FRIEND_TELEGRAM_ID", 0) or 0)
+FRIEND_CHANNEL_ID = os.environ.get("FRIEND_CHANNEL_ID")
+FRIEND_CUENTA_X   = os.environ.get("FRIEND_CUENTA_X", "Mercado_Ingles")
+
+SUB_USUARIOS = {}
+if FRIEND_ID and FRIEND_CHANNEL_ID and FRIEND_CUENTA_X:
+    if FRIEND_CUENTA_X not in CUENTAS_X:
+        logger.warning(f"FRIEND_CUENTA_X='{FRIEND_CUENTA_X}' no está en CUENTAS_X; el invitado no recibirá noticias.")
+    SUB_USUARIOS[FRIEND_CUENTA_X] = {"user_id": FRIEND_ID, "channel_id": FRIEND_CHANNEL_ID}
+
+USUARIOS_AUTORIZADOS = {ADMIN_ID} | {v["user_id"] for v in SUB_USUARIOS.values()}
+
+def obtener_destino(cuenta: str) -> dict:
+    """Devuelve el dueño (Telegram ID) y el canal destino para una cuenta de X.
+    Si la cuenta no tiene invitado asignado, pertenece al admin principal."""
+    return SUB_USUARIOS.get(cuenta, {"user_id": ADMIN_ID, "channel_id": CHANNEL_ID})
+
 pendientes    = {}
 esperando_foto = {}
 esperando_hora = {}
@@ -338,15 +365,19 @@ async def procesar_noticia(n, context):
             if r.status_code == 200: img_b = r.content
         except: pass
 
+    destino = obtener_destino(n["user"])
     try:
         supabase.table("noticias").insert({
             "identificador_ia": tid,
             "url_origen": n["url"],
             "estado": "en_revision"
         }).execute()
-        pendientes[tid] = {"texto": redac, "foto": img_b, "url": n["url"]}
+        pendientes[tid] = {
+            "texto": redac, "foto": img_b, "url": n["url"],
+            "owner_id": destino["user_id"], "channel_id": destino["channel_id"],
+        }
         await enviar_panel_control(tid, context)
-        logger.info(f"✅ Noticia enviada al panel: {tid}")
+        logger.info(f"✅ Noticia enviada al panel de {destino['user_id']}: {tid}")
         return True
     except Exception as e:
         logger.error(f"Error al registrar en Supabase: {e}")
@@ -360,37 +391,41 @@ async def enviar_panel_control(tid, context):
         [InlineKeyboardButton("🗑 BORRAR", callback_data=f"d:{tid}")]
     ])
     cap = f"🆔 <code>{tid}</code>\n\n{d['texto']}"
+    destinatario = d.get("owner_id", ADMIN_ID)
     if d["foto"]:
-        await context.bot.send_photo(ADMIN_ID, BytesIO(d["foto"]), caption=cap, parse_mode=ParseMode.HTML, reply_markup=btn)
+        await context.bot.send_photo(destinatario, BytesIO(d["foto"]), caption=cap, parse_mode=ParseMode.HTML, reply_markup=btn)
     else:
-        await context.bot.send_message(ADMIN_ID, cap, parse_mode=ParseMode.HTML, reply_markup=btn)
+        await context.bot.send_message(destinatario, cap, parse_mode=ParseMode.HTML, reply_markup=btn)
 
 # ─── Comandos ───────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user and update.effective_user.id == ADMIN_ID:
+    if update.effective_user and update.effective_user.id in USUARIOS_AUTORIZADOS:
+        es_admin = update.effective_user.id == ADMIN_ID
+        comandos_extra = "• /test — Enviar partidos de hoy al canal\n• /testfecha YYYY-MM-DD — Probar partidos de una fecha\n" if es_admin else ""
         await update.message.reply_text(
             "👋 <b>Universo Football Bot</b>\n\n"
             "📋 <b>Comandos:</b>\n"
             "• /start — Este mensaje\n"
             "• /estado — Estado del bot\n"
             "• /scan — Forzar búsqueda de noticias\n"
-            "• /test — Enviar partidos de hoy al canal\n"
-            "• /testfecha YYYY-MM-DD — Probar partidos de una fecha\n"
-            "• /clear — Eliminar todos los posts pendientes\n\n"
+            f"{comandos_extra}"
+            "• /clear — Eliminar tus posts pendientes\n\n"
             "<i>⚽️ Suscríbete en t.me/iUniversoFootball</i>",
             parse_mode=ParseMode.HTML
         )
 
 async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user and update.effective_user.id == ADMIN_ID:
+    if update.effective_user and update.effective_user.id in USUARIOS_AUTORIZADOS:
+        uid = update.effective_user.id
+        propios = sum(1 for d in pendientes.values() if d.get("owner_id", ADMIN_ID) == uid)
         ahora_ccs = datetime.now(VENEZUELA_TZ).strftime("%H:%M:%S")
         await update.message.reply_text(
-            f"✅ <b>Online</b>\n📍 Hora CCS: {ahora_ccs}\n📦 Pendientes: {len(pendientes)}",
+            f"✅ <b>Online</b>\n📍 Hora CCS: {ahora_ccs}\n📦 Tus pendientes: {propios}",
             parse_mode=ParseMode.HTML
         )
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user and update.effective_user.id == ADMIN_ID:
+    if update.effective_user and update.effective_user.id in USUARIOS_AUTORIZADOS:
         await update.message.reply_text("🔎 Escaneando fuentes...")
         await monitoreo_wrapper(context)
 
@@ -438,27 +473,32 @@ async def cmd_testfecha(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Callbacks & Input ──────────────────────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    if not q or not q.from_user or q.from_user.id != ADMIN_ID: return
-    await q.answer()
+    if not q or not q.from_user: return
+    uid = q.from_user.id
+    if uid not in USUARIOS_AUTORIZADOS: return
+    if q.data is None or ":" not in q.data: return
     act, tid = q.data.split(":")
     if tid not in pendientes: return
+    # Solo el dueño de esta noticia (admin o el invitado asignado a su cuenta) puede tocarla.
+    if pendientes[tid].get("owner_id", ADMIN_ID) != uid: return
+    await q.answer()
     if act == "p":
         await publicar_ahora(tid, context)
     elif act == "s":
-        esperando_hora[ADMIN_ID] = tid
-        await context.bot.send_message(ADMIN_ID, "⏰ Hora Caracas (24h, ej: 15:30):")
+        esperando_hora[uid] = tid
+        await context.bot.send_message(uid, "⏰ Hora Caracas (24h, ej: 15:30):")
     elif act == "e":
-        esperando_edicion[ADMIN_ID] = tid
-        await context.bot.send_message(ADMIN_ID, "📝 Envía el nuevo texto:")
+        esperando_edicion[uid] = tid
+        await context.bot.send_message(uid, "📝 Envía el nuevo texto:")
     elif act == "f":
-        esperando_foto[ADMIN_ID] = tid
-        await context.bot.send_message(ADMIN_ID, "📸 Envía la nueva foto:")
+        esperando_foto[uid] = tid
+        await context.bot.send_message(uid, "📸 Envía la nueva foto:")
     elif act == "d":
         if tid in pendientes: del pendientes[tid]
         await q.delete_message()
 
 async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or update.effective_user.id != ADMIN_ID: return
+    if not update.effective_user or update.effective_user.id not in USUARIOS_AUTORIZADOS: return
     uid = update.effective_user.id
     if uid in esperando_hora:
         tid = esperando_hora.pop(uid)
@@ -495,38 +535,42 @@ async def publicar_ahora(tid, context):
     if not d:
         logger.warning(f"publicar_ahora: tid {tid} no en pendientes")
         return
+    destino_channel = d.get("channel_id", CHANNEL_ID)
+    destino_owner   = d.get("owner_id", ADMIN_ID)
     try:
         if d["foto"]:
             await context.bot.send_photo(
-                CHANNEL_ID, BytesIO(d["foto"]),
+                destino_channel, BytesIO(d["foto"]),
                 caption=d["texto"], parse_mode=ParseMode.HTML
             )
         else:
             await context.bot.send_message(
-                CHANNEL_ID, d["texto"], parse_mode=ParseMode.HTML
+                destino_channel, d["texto"], parse_mode=ParseMode.HTML
             )
         supabase.table("noticias").update({"estado": "publicado"}).eq("identificador_ia", tid).execute()
         del pendientes[tid]
         await context.bot.send_message(
-            ADMIN_ID, f"✅ Publicado: <code>{tid}</code>", parse_mode=ParseMode.HTML
+            destino_owner, f"✅ Publicado: <code>{tid}</code>", parse_mode=ParseMode.HTML
         )
-        logger.info(f"Publicado: {tid}")
+        logger.info(f"Publicado: {tid} -> {destino_channel}")
     except Exception as e:
         logger.error(f"Error publicando {tid}: {e}")
         await context.bot.send_message(
-            ADMIN_ID, f"❌ Error al publicar <code>{tid}</code>:\n<code>{e}</code>",
+            destino_owner, f"❌ Error al publicar <code>{tid}</code>:\n<code>{e}</code>",
             parse_mode=ParseMode.HTML
         )
 
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or update.effective_user.id != ADMIN_ID: return
-    cantidad = len(pendientes)
-    if cantidad == 0:
+    if not update.effective_user or update.effective_user.id not in USUARIOS_AUTORIZADOS: return
+    uid = update.effective_user.id
+    tids_propios = [tid for tid, d in pendientes.items() if d.get("owner_id", ADMIN_ID) == uid]
+    if not tids_propios:
         await update.message.reply_text("📭 No hay posts pendientes.")
         return
-    pendientes.clear()
+    for tid in tids_propios:
+        del pendientes[tid]
     await update.message.reply_text(
-        f"🗑 Se eliminaron <b>{cantidad}</b> post(s) pendiente(s).",
+        f"🗑 Se eliminaron <b>{len(tids_propios)}</b> post(s) pendiente(s).",
         parse_mode=ParseMode.HTML
     )
 

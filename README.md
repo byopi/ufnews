@@ -56,6 +56,22 @@ CREATE TABLE noticias (
 | `SUPABASE_KEY` | La `service_role` key (NO la anon key) |
 | `GEMINI_API_KEY` | Tu key de aistudio.google.com |
 
+#### Opcional — Invitar a otra persona con UNA cuenta específica
+
+Si quieres que otra persona use el bot solo con una de las cuentas de `CUENTAS_X` y publique en su propio canal (sin ver ni tocar tu cola ni tu canal), agrega también:
+
+| Variable | Valor |
+|---|---|
+| `FRIEND_TELEGRAM_ID` | ID numérico de Telegram del invitado (@userinfobot) |
+| `FRIEND_CHANNEL_ID` | Canal del invitado, ej: `@canal_de_tu_amigo` |
+| `FRIEND_CUENTA_X` | Nombre exacto de la cuenta de X que le pertenece (debe estar en `CUENTAS_X`, ej: `Mercado_Ingles`) |
+
+Con esto configurado:
+- Las noticias detectadas en `FRIEND_CUENTA_X` se envían **solo** al invitado, con los mismos botones (✅ Publicar / ⏰ Programar / 📝 Editar / 🖼 Cambiar imagen / 🗑 Borrar), y se publican en `FRIEND_CHANNEL_ID`.
+- El resto de las cuentas siguen funcionando exactamente igual para ti (admin), publicando en `TELEGRAM_CHANNEL_ID`.
+- `/estado` y `/clear` muestran/afectan solo los pendientes de quien ejecuta el comando.
+- Si más adelante quieres agregar un segundo invitado con otra cuenta, se puede extender el diccionario `SUB_USUARIOS` en `bot.py`.
+
 ### Paso 4 — UptimeRobot (mantener 24/7)
 
 1. Ve a [uptimerobot.com](https://uptimerobot.com)
