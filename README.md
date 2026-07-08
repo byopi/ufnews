@@ -65,6 +65,7 @@ Si quieres que otra persona use el bot solo con una de las cuentas de `CUENTAS_X
 | `FRIEND_TELEGRAM_ID` | ID numérico de Telegram del invitado (@userinfobot) |
 | `FRIEND_CHANNEL_ID` | Canal del invitado, ej: `@canal_de_tu_amigo` |
 | `FRIEND_CUENTA_X` | Nombre exacto de la cuenta de X que le pertenece (debe estar en `CUENTAS_X`, ej: `Mercado_Ingles`) |
+| `FRIEND_CANAL_TEXTO` | Texto de "Suscríbete en..." que aparecerá en sus posts (default: `t.me/PremierLeagueES`) |
 
 Con esto configurado:
 - Las noticias detectadas en `FRIEND_CUENTA_X` se envían **solo** al invitado, con los mismos botones (✅ Publicar / ⏰ Programar / 📝 Editar / 🖼 Cambiar imagen / 🗑 Borrar), y se publican en `FRIEND_CHANNEL_ID`.

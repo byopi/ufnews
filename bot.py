@@ -47,19 +47,29 @@ CUENTAS_X = ["mercatosphera", "Mercado_Ingles", "SoyCalcio_", "postunited", "lal
 FRIEND_ID         = int(os.environ.get("FRIEND_TELEGRAM_ID", 0) or 0)
 FRIEND_CHANNEL_ID = os.environ.get("FRIEND_CHANNEL_ID")
 FRIEND_CUENTA_X   = os.environ.get("FRIEND_CUENTA_X", "Mercado_Ingles")
+FRIEND_CANAL_TEXTO = os.environ.get("FRIEND_CANAL_TEXTO", "t.me/PremierLeagueES")
 
 SUB_USUARIOS = {}
 if FRIEND_ID and FRIEND_CHANNEL_ID and FRIEND_CUENTA_X:
     if FRIEND_CUENTA_X not in CUENTAS_X:
         logger.warning(f"FRIEND_CUENTA_X='{FRIEND_CUENTA_X}' no está en CUENTAS_X; el invitado no recibirá noticias.")
-    SUB_USUARIOS[FRIEND_CUENTA_X] = {"user_id": FRIEND_ID, "channel_id": FRIEND_CHANNEL_ID}
+    SUB_USUARIOS[FRIEND_CUENTA_X] = {
+        "user_id": FRIEND_ID,
+        "channel_id": FRIEND_CHANNEL_ID,
+        "canal_texto": FRIEND_CANAL_TEXTO,
+    }
 
 USUARIOS_AUTORIZADOS = {ADMIN_ID} | {v["user_id"] for v in SUB_USUARIOS.values()}
 
 def obtener_destino(cuenta: str) -> dict:
-    """Devuelve el dueño (Telegram ID) y el canal destino para una cuenta de X.
-    Si la cuenta no tiene invitado asignado, pertenece al admin principal."""
-    return SUB_USUARIOS.get(cuenta, {"user_id": ADMIN_ID, "channel_id": CHANNEL_ID})
+    """Devuelve el dueño (Telegram ID), el canal destino y el texto de
+    suscripción para una cuenta de X. Si la cuenta no tiene invitado
+    asignado, pertenece al admin principal."""
+    return SUB_USUARIOS.get(cuenta, {
+        "user_id": ADMIN_ID,
+        "channel_id": CHANNEL_ID,
+        "canal_texto": "t.me/iUniversoFootball",
+    })
 
 pendientes    = {}
 esperando_foto = {}
@@ -332,6 +342,7 @@ async def procesar_noticia(n, context):
         logger.error(f"Error consultando Supabase: {e}")
         return False
 
+    destino = obtener_destino(n["user"])
     try:
         completion = client_groq.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -343,7 +354,7 @@ async def procesar_noticia(n, context):
                     "▫️ Hecho 1 (máx 2 líneas).\n"
                     "▫️ Hecho 2 (máx 2 líneas).\n\n"
                     "<b>ℹ️ » [Nombre]</b> (SOLO si hay fuente clara)\n\n"
-                    "📲 <b>Suscríbete en t.me/iUniversoFootball</b>\n\n"
+                    f"📲 <b>Suscríbete en {destino['canal_texto']}</b>\n\n"
                     "REGLAS:\n"
                     "- Usa ÚNICAMENTE el emoji ▫️ para los hechos.\n"
                     "- Prohibido usar el espacio invisible de Telegram (\\xa0).\n"
@@ -365,7 +376,6 @@ async def procesar_noticia(n, context):
             if r.status_code == 200: img_b = r.content
         except: pass
 
-    destino = obtener_destino(n["user"])
     try:
         supabase.table("noticias").insert({
             "identificador_ia": tid,
