@@ -361,7 +361,7 @@ async def procesar_noticia(n, context):
     destino = obtener_destino(n["user"])
     try:
         completion = client_groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": (
                     "Eres el redactor de 'Universo Football'.\n\n"
