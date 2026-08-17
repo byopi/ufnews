@@ -100,9 +100,14 @@ GIF_URL = (
     "kxHSkP33y4Lard0BsQGvV3kGM/s600/doc_2026-03-04_19-31-59.gif"
 )
 
+# Configuración de zona horaria (Venezuela UTC-4)
+VENEZUELA_TZ = pytz.timezone("America/Caracas")
+logger = logging.getLogger(__name__)
+
 # ─── Ligas ESPN ─────────────────────────────────────────────────────────────
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
 
+# Slugs válidos y probados de la API de ESPN
 LEAGUES = {
     "ger.1":                        ("🇩🇪", "Bundesliga"),
     "ger.dfb_pokal":                ("🇩🇪", "DFB-Pokal"),
@@ -121,24 +126,11 @@ LEAGUES = {
     "uefa.europa":                  ("🌍", "Europa League"),
     "uefa.europa.conf":             ("🌍", "Conference League"),
     "uefa.nations":                 ("🌍", "Nations League"),
-    "fifa.worldq.uefa":             ("🇪🇺", "Eliminatorias UEFA"),
-    "fifa.worldq.intercontinental": ("🌍", "Repesca Intercontinental"),
     "fifa.friendly":                ("🌍", "Amistosos Internacionales"),
-    "international.friendly":       ("🌍", "Amistosos Internacionales"),
     "fifa.world":                   ("🌍", "Mundial FIFA"),
     "uefa.euro":                    ("🇪🇺", "Eurocopa"),
     "conmebol.america":             ("🌎", "Copa América"),
     "caf.nations":                  ("🌍", "Copa Africana de Naciones"),
-    "fifa.series":                  ("🌍", "FIFA Series"),
-    "fifa.series.men":              ("🌍", "FIFA Series"),
-    "fifa.worldq.conmebol":         ("🌎", "Eliminatorias CONMEBOL"),
-    "conmebol.qualifying":          ("🌎", "Eliminatorias CONMEBOL"),
-    "uefa.qualifying":              ("🇪🇺", "Repesca Europea"),
-    "fifa.worldq.concacaf":         ("🌎", "Eliminatorias CONCACAF"),
-    "concacaf.qualifying":          ("🌎", "Eliminatorias CONCACAF"),
-    "fifa.worldq.afc":              ("🌏", "Eliminatorias AFC"),
-    "fifa.worldq.caf":              ("🌍", "Eliminatorias CAF"),
-    "fifa.worldq.afc.conmebol":     ("🌍", "Repesca AFC/CONMEBOL"),
     "conmebol.libertadores":        ("🌎", "CONMEBOL Libertadores"),
     "conmebol.sudamericana":        ("🌎", "CONMEBOL Sudamericana"),
     "conmebol.recopa":              ("🌎", "Recopa Sudamericana"),
@@ -231,12 +223,16 @@ def fetch_matches_for_date(local_date: str) -> dict:
         for event in events:
             utc_str = event.get("date", "")
             time_str, dt_local = parse_event_time(utc_str)
+            
+            # Filtro por fecha local en Venezuela
             if dt_local and dt_local.strftime("%Y-%m-%d") != local_date:
                 continue
+
             round_name = get_round_name(event)
             competitions = event.get("competitions", [{}])
             comp = competitions[0] if competitions else {}
             competitors = comp.get("competitors", [])
+
             home = next(
                 (c.get("team", {}).get("displayName", "?")
                  for c in competitors if c.get("homeAway") == "home"), "?"
@@ -245,8 +241,10 @@ def fetch_matches_for_date(local_date: str) -> dict:
                 (c.get("team", {}).get("displayName", "?")
                  for c in competitors if c.get("homeAway") == "away"), "?"
             )
+
             if slug not in all_matches:
                 all_matches[slug] = (flag, name, round_name, [])
+
             all_matches[slug][3].append({
                 "home": home,
                 "away": away,
