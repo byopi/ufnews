@@ -209,29 +209,45 @@ ESPN_HEADERS = {
     "Accept": "application/json",
 }
 
+# Cadena de proxies públicos gratuitos (sin API key). Se prueban en orden
+# hasta que uno responda 200. Ninguno tiene SLA, por eso varios: si uno está
+# caído/saturado (ej. Cloudflare 520/522 en allorigins), probamos el siguiente
+# antes de rendirnos.
+def _proxy_allorigins(full_url: str) -> str:
+    return f"https://api.allorigins.win/raw?url={quote(full_url, safe='')}"
+
+def _proxy_corsproxy(full_url: str) -> str:
+    return f"https://corsproxy.io/?url={quote(full_url, safe='')}"
+
+def _proxy_thingproxy(full_url: str) -> str:
+    return f"https://thingproxy.freeboard.io/fetch/{full_url}"
+
+PROXY_CHAIN = [_proxy_allorigins, _proxy_corsproxy, _proxy_thingproxy]
+
 def _fetch_espn_json(url: str, params: dict, timeout: int = 10):
-    """Pide directo a ESPN. Si el 403 es por bloqueo de IP (típico en hosting
-    compartido como Render), reintenta a través de un proxy público gratuito
-    (allorigins.win) que sale desde otra IP, sin costo ni API key."""
+    """Pide directo a ESPN. Si da 403 (bloqueo de IP de Render), prueba la
+    cadena de proxies en orden hasta que alguno funcione."""
     try:
         resp = requests.get(url, params=params, headers=ESPN_HEADERS, timeout=timeout)
         if resp.status_code == 200:
             return resp.json(), "directo"
         if resp.status_code != 403:
             return None, f"HTTP {resp.status_code}"
-        # 403 -> probablemente bloqueo de IP de Render, no de headers. Seguimos al proxy.
+        # 403 -> bloqueo de IP, no de headers. Seguimos a los proxies.
     except Exception as e:
         return None, f"excepción directa: {e}"
 
-    try:
-        full_url = requests.Request("GET", url, params=params).prepare().url
-        proxied_url = f"https://api.allorigins.win/raw?url={quote(full_url, safe='')}"
-        resp2 = requests.get(proxied_url, timeout=timeout + 10)
-        if resp2.status_code == 200:
-            return resp2.json(), "proxy"
-        return None, f"proxy HTTP {resp2.status_code}"
-    except Exception as e:
-        return None, f"excepción proxy: {e}"
+    full_url = requests.Request("GET", url, params=params).prepare().url
+    errores = []
+    for i, proxy_fn in enumerate(PROXY_CHAIN, start=1):
+        try:
+            resp2 = requests.get(proxy_fn(full_url), timeout=8)
+            if resp2.status_code == 200:
+                return resp2.json(), f"proxy#{i}"
+            errores.append(f"proxy#{i} HTTP {resp2.status_code}")
+        except Exception as e:
+            errores.append(f"proxy#{i} excepción: {e}")
+    return None, " | ".join(errores)
 
 def fetch_league(slug: str, date_str: str) -> list:
     url = f"{ESPN_BASE}/{slug}/scoreboard"
