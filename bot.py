@@ -201,35 +201,48 @@ def parse_event_time(utc_str: str):
     except Exception:
         return "--:--", None
 
+from urllib.parse import quote
+
 ESPN_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json",
 }
 
-def fetch_league(slug: str, date_str: str) -> list:
+def _fetch_espn_json(url: str, params: dict, timeout: int = 10):
+    """Pide directo a ESPN. Si el 403 es por bloqueo de IP (típico en hosting
+    compartido como Render), reintenta a través de un proxy público gratuito
+    (allorigins.win) que sale desde otra IP, sin costo ni API key."""
     try:
-        resp = requests.get(
-            f"{ESPN_BASE}/{slug}/scoreboard",
-            params={"dates": espn_date(date_str), "limit": 100},
-            headers=ESPN_HEADERS,
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            # Antes esto se tragaba en silencio y el bot reportaba "no hay
-            # partidos" sin dejar rastro del motivo real (bloqueo, rate
-            # limit, endpoint caído, etc). Ahora queda en los logs de Render.
-            logger.warning(
-                f"[ESPN] {slug} dates={date_str} -> HTTP {resp.status_code} "
-                f"({resp.text[:150]!r})"
-            )
-            return []
-        events = resp.json().get("events", [])
-        logger.info(f"[ESPN] {slug} dates={date_str} -> {len(events)} evento(s)")
-        return events
+        resp = requests.get(url, params=params, headers=ESPN_HEADERS, timeout=timeout)
+        if resp.status_code == 200:
+            return resp.json(), "directo"
+        if resp.status_code != 403:
+            return None, f"HTTP {resp.status_code}"
+        # 403 -> probablemente bloqueo de IP de Render, no de headers. Seguimos al proxy.
     except Exception as e:
-        logger.error(f"[ESPN] Error fetching {slug} dates={date_str}: {e}")
+        return None, f"excepción directa: {e}"
+
+    try:
+        full_url = requests.Request("GET", url, params=params).prepare().url
+        proxied_url = f"https://api.allorigins.win/raw?url={quote(full_url, safe='')}"
+        resp2 = requests.get(proxied_url, timeout=timeout + 10)
+        if resp2.status_code == 200:
+            return resp2.json(), "proxy"
+        return None, f"proxy HTTP {resp2.status_code}"
+    except Exception as e:
+        return None, f"excepción proxy: {e}"
+
+def fetch_league(slug: str, date_str: str) -> list:
+    url = f"{ESPN_BASE}/{slug}/scoreboard"
+    params = {"dates": espn_date(date_str), "limit": 100}
+    data, via = _fetch_espn_json(url, params)
+    if data is None:
+        logger.warning(f"[ESPN] {slug} dates={date_str} -> sin datos ({via})")
         return []
+    events = data.get("events", [])
+    logger.info(f"[ESPN] {slug} dates={date_str} -> {len(events)} evento(s) (vía {via})")
+    return events
 
 # ══════════════════════════════════════════════════════════════════
 # PARCHE 1 — Desfase UTC vs hora local de Venezuela
