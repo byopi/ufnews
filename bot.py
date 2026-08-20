@@ -359,7 +359,7 @@ async def procesar_noticia(n, context):
     destino = obtener_destino(n["user"])
     try:
         completion = client_groq.chat.completions.create(
-            model="gemma2-9b-it",
+            model="openai/gpt-oss-20b",
             messages=[
                 {"role": "system", "content": (
                     "Eres el redactor de 'Universo Football'.\n\n"
