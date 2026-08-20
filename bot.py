@@ -201,19 +201,34 @@ def parse_event_time(utc_str: str):
     except Exception:
         return "--:--", None
 
+ESPN_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+}
+
 def fetch_league(slug: str, date_str: str) -> list:
     try:
         resp = requests.get(
             f"{ESPN_BASE}/{slug}/scoreboard",
             params={"dates": espn_date(date_str), "limit": 100},
-            headers={"User-Agent": "Mozilla/5.0"},
+            headers=ESPN_HEADERS,
             timeout=10,
         )
         if resp.status_code != 200:
+            # Antes esto se tragaba en silencio y el bot reportaba "no hay
+            # partidos" sin dejar rastro del motivo real (bloqueo, rate
+            # limit, endpoint caído, etc). Ahora queda en los logs de Render.
+            logger.warning(
+                f"[ESPN] {slug} dates={date_str} -> HTTP {resp.status_code} "
+                f"({resp.text[:150]!r})"
+            )
             return []
-        return resp.json().get("events", [])
+        events = resp.json().get("events", [])
+        logger.info(f"[ESPN] {slug} dates={date_str} -> {len(events)} evento(s)")
+        return events
     except Exception as e:
-        logger.error(f"Error fetching ESPN {slug}: {e}")
+        logger.error(f"[ESPN] Error fetching {slug} dates={date_str}: {e}")
         return []
 
 # ══════════════════════════════════════════════════════════════════
