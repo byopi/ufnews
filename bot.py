@@ -216,41 +216,60 @@ def fetch_league(slug: str, date_str: str) -> list:
         logger.error(f"Error fetching ESPN {slug}: {e}")
         return []
 
+# ══════════════════════════════════════════════════════════════════
+# PARCHE 1 — Desfase UTC vs hora local de Venezuela
+# ══════════════════════════════════════════════════════════════════
+# ESPN filtra ?dates=YYYYMMDD en UTC. Un partido a partir de las 8-9pm
+# hora Caracas (UTC-4) cae en el día SIGUIENTE en UTC, así que pedir
+# solo local_date nunca lo trae. Ahora pedimos local_date y el día
+# siguiente, juntamos sin duplicar por "id", y el filtro por dt_local
+# (igual que antes) se queda solo con los del día correcto.
 def fetch_matches_for_date(local_date: str) -> dict:
     all_matches: dict = {}
+
+    d0 = datetime.strptime(local_date, "%Y-%m-%d").date()
+    fechas_a_pedir = [local_date, (d0 + timedelta(days=1)).strftime("%Y-%m-%d")]
+
     for slug, (flag, name) in LEAGUES.items():
-        events = fetch_league(slug, local_date)
-        for event in events:
-            utc_str = event.get("date", "")
-            time_str, dt_local = parse_event_time(utc_str)
-            
-            # Filtro por fecha local en Venezuela
-            if dt_local and dt_local.strftime("%Y-%m-%d") != local_date:
-                continue
+        eventos_vistos = set()  # evita duplicar un evento si aparece en ambos pedidos
+        for fecha_utc in fechas_a_pedir:
+            events = fetch_league(slug, fecha_utc)
+            for event in events:
+                eid = event.get("id")
+                if eid in eventos_vistos:
+                    continue
+                eventos_vistos.add(eid)
 
-            round_name = get_round_name(event)
-            competitions = event.get("competitions", [{}])
-            comp = competitions[0] if competitions else {}
-            competitors = comp.get("competitors", [])
+                utc_str = event.get("date", "")
+                time_str, dt_local = parse_event_time(utc_str)
 
-            home = next(
-                (c.get("team", {}).get("displayName", "?")
-                 for c in competitors if c.get("homeAway") == "home"), "?"
-            )
-            away = next(
-                (c.get("team", {}).get("displayName", "?")
-                 for c in competitors if c.get("homeAway") == "away"), "?"
-            )
+                # Filtro por fecha local en Venezuela
+                if dt_local and dt_local.strftime("%Y-%m-%d") != local_date:
+                    continue
 
-            if slug not in all_matches:
-                all_matches[slug] = (flag, name, round_name, [])
+                round_name = get_round_name(event)
+                competitions = event.get("competitions", [{}])
+                comp = competitions[0] if competitions else {}
+                competitors = comp.get("competitors", [])
 
-            all_matches[slug][3].append({
-                "home": home,
-                "away": away,
-                "time_str": time_str,
-                "dt_local": dt_local,
-            })
+                home = next(
+                    (c.get("team", {}).get("displayName", "?")
+                     for c in competitors if c.get("homeAway") == "home"), "?"
+                )
+                away = next(
+                    (c.get("team", {}).get("displayName", "?")
+                     for c in competitors if c.get("homeAway") == "away"), "?"
+                )
+
+                if slug not in all_matches:
+                    all_matches[slug] = (flag, name, round_name, [])
+
+                all_matches[slug][3].append({
+                    "home": home,
+                    "away": away,
+                    "time_str": time_str,
+                    "dt_local": dt_local,
+                })
     return all_matches
 
 def fetch_matches() -> dict:
@@ -321,17 +340,79 @@ def run_http_server():
     server = HTTPServer(("0.0.0.0", port), RenderKeepAlive)
     server.serve_forever()
 
-# ─── Obtención de RSS ────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# PARCHE 2 — Fuentes de X: Syndication API primero, Nitter como respaldo
+# ══════════════════════════════════════════════════════════════════
+# Nitter está roto desde enero 2026: nitter.net devuelve RSS en blanco,
+# xcancel.com exige un User-Agent real de navegador, y el resto de
+# instancias públicas están bloqueadas por anti-bot. La Syndication API
+# de X (la misma que usa Twitter para sus embeds) no requiere login y
+# es más estable hoy.
+SYNDICATION_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+}
+
+def fetch_tweets_syndication(user, num=5):
+    """Fuente principal: Twitter Syndication API (sin auth)."""
+    url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{user}"
+    headers = {**SYNDICATION_HEADERS, "Referer": f"https://twitter.com/{user}"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return []
+        match = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+            resp.text, re.DOTALL
+        )
+        if not match:
+            return []
+        data = json.loads(match.group(1))
+        entries = (data.get("props", {})
+                       .get("pageProps", {})
+                       .get("timeline", {})
+                       .get("entries", []))[:num]
+        res = []
+        for entry in entries:
+            tweet = entry.get("content", {}).get("tweet", {})
+            if not tweet or tweet.get("retweeted_status"):
+                continue
+            texto = tweet.get("full_text", tweet.get("text", ""))
+            texto = re.sub(r"https?://t\.co/\S+", "", texto).strip()
+            if not texto:
+                continue
+            tid = tweet.get("id_str", "")
+            img = None
+            media = (tweet.get("extended_entities", {}).get("media", [])
+                     or tweet.get("entities", {}).get("media", []))
+            for m in media:
+                if m.get("type") == "photo":
+                    img = m.get("media_url_https", "")
+                    break
+            res.append({
+                "texto": texto,
+                "url": f"https://x.com/{user}/status/{tid}",
+                "img": img,
+                "user": user,
+            })
+        if res:
+            logger.info(f"[Synd] ✅ @{user} ({len(res)})")
+        return res
+    except Exception as e:
+        logger.warning(f"[Synd] ❌ @{user}: {e}")
+        return []
+
 def fetch_tweets_rss(user, num=5):
-    instancias = [
-        f"https://nitter.net/{user}/rss",
-        f"https://xcancel.com/{user}/rss",
-        f"https://nitter.cz/{user}/rss"
-    ]
-    random.shuffle(instancias)
-    for url in instancias:
+    """Fallback: Nitter RSS con headers de navegador real (xcancel.com es
+    la única instancia que sigue respondiendo algo en 2026)."""
+    instancias = ["https://xcancel.com"]
+    for base in instancias:
         try:
-            feed = feedparser.parse(url, agent='Mozilla/5.0')
+            feed = feedparser.parse(
+                f"{base}/{user}/rss",
+                request_headers={"User-Agent": SYNDICATION_HEADERS["User-Agent"]},
+            )
             if len(feed.entries) > 0:
                 res = []
                 for entry in feed.entries[:num]:
@@ -340,11 +421,37 @@ def fetch_tweets_rss(user, num=5):
                     if not texto or "rss reader" in texto.lower(): continue
                     img = soup.find('img')['src'] if soup.find('img') else None
                     res.append({"texto": texto, "url": entry.link, "img": img, "user": user})
-                if res: return res
-        except: continue
+                if res:
+                    logger.info(f"[Nitter] ✅ @{user} via {base} ({len(res)})")
+                    return res
+        except Exception:
+            continue
     return []
 
+def fetch_tweets(user, num=5):
+    """Punto de entrada único: Syndication API primero, Nitter como respaldo."""
+    tweets = fetch_tweets_syndication(user, num=num)
+    if tweets:
+        return tweets
+    return fetch_tweets_rss(user, num=num)
+
 # ─── Lógica de Procesamiento ────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════
+# PARCHE 3 — Ahorro de ancho de banda de salida en Render
+# ══════════════════════════════════════════════════════════════════
+# Render solo cobra por tráfico de SALIDA. Antes se descargaba la imagen
+# completa (entrada, gratis) y se reenviaba DOS veces por Telegram como
+# bytes (panel de aprobación + publicación) — eso sí se cobra doble.
+# Ahora se guarda la URL y se le pasa directo a Telegram para que la
+# descargue del origen; cero bytes de imagen cruzan por Render.
+def _foto_arg(foto):
+    """Bytes -> BytesIO (fotos subidas a mano por el admin). str (URL o
+    file_id) -> se pasa tal cual, Telegram la resuelve sin pasar por Render."""
+    if isinstance(foto, (bytes, bytearray)):
+        return BytesIO(foto)
+    return foto
+
 async def procesar_noticia(n, context):
     semilla = f"{n['texto']}{n['url']}".encode()
     tid = hashlib.md5(semilla).hexdigest()[:12]
@@ -383,12 +490,9 @@ async def procesar_noticia(n, context):
         logger.error(f"Error Groq: {e}")
         return False
 
-    img_b = None
-    if n["img"]:
-        try:
-            r = requests.get(n["img"], timeout=10)
-            if r.status_code == 200: img_b = r.content
-        except: pass
+    # PARCHE 3: guardamos la URL de la imagen, no los bytes. Telegram la
+    # descarga directo del origen, así que no consume salida de Render.
+    img_ref = n["img"]
 
     try:
         supabase.table("noticias").insert({
@@ -397,7 +501,7 @@ async def procesar_noticia(n, context):
             "estado": "en_revision"
         }).execute()
         pendientes[tid] = {
-            "texto": redac, "foto": img_b, "url": n["url"],
+            "texto": redac, "foto": img_ref, "url": n["url"],
             "owner_id": destino["user_id"], "channel_id": destino["channel_id"],
         }
         await enviar_panel_control(tid, context)
@@ -418,7 +522,7 @@ async def enviar_panel_control(tid, context):
     destinatario = d.get("owner_id", ADMIN_ID)
     try:
         if d["foto"]:
-            await context.bot.send_photo(destinatario, BytesIO(d["foto"]), caption=cap, parse_mode=ParseMode.HTML, reply_markup=btn)
+            await context.bot.send_photo(destinatario, _foto_arg(d["foto"]), caption=cap, parse_mode=ParseMode.HTML, reply_markup=btn)
         else:
             await context.bot.send_message(destinatario, cap, parse_mode=ParseMode.HTML, reply_markup=btn)
     except Exception as e:
@@ -566,8 +670,10 @@ async def recibir_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif uid in esperando_foto:
         tid = esperando_foto.pop(uid)
         if update.message.photo:
-            foto = await update.message.photo[-1].get_file()
-            pendientes[tid]["foto"] = await foto.download_as_bytearray()
+            # PARCHE 3: guardamos el file_id que ya vive en los servidores de
+            # Telegram, en vez de descargar el archivo a Render y reenviarlo.
+            # Cero bytes de imagen pasan por Render en este flujo tampoco.
+            pendientes[tid]["foto"] = update.message.photo[-1].file_id
             await enviar_panel_control(tid, context)
 
 async def publicar_ahora(tid, context):
@@ -580,7 +686,7 @@ async def publicar_ahora(tid, context):
     try:
         if d["foto"]:
             await context.bot.send_photo(
-                destino_channel, BytesIO(d["foto"]),
+                destino_channel, _foto_arg(d["foto"]),
                 caption=d["texto"], parse_mode=ParseMode.HTML
             )
         else:
@@ -619,7 +725,7 @@ async def monitoreo_wrapper(context: ContextTypes.DEFAULT_TYPE):
     logger.info("🚀 Iniciando escaneo de noticias...")
     encontradas = 0
     for c in CUENTAS_X:
-        for item in fetch_tweets_rss(c, num=5):
+        for item in fetch_tweets(c, num=5):
             if await procesar_noticia(item, context):
                 encontradas += 1
             await asyncio.sleep(2)
